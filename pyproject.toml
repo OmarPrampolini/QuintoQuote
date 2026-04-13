@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quintoquote"
+version = "1.0.0"
+description = "Generatore di preventivi PDF professionali per cessione del quinto e delega di pagamento."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "QuintoQuote contributors" }]
+keywords = ["pdf", "finance", "reportlab", "flask", "cessione-del-quinto"]
+dependencies = [
+  "reportlab>=4.0",
+  "flask>=3.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Topic :: Office/Business :: Financial",
+]
+
+[project.scripts]
+quintoquote = "preventivo_generator_v2:main"
+
+[tool.setuptools]
+py-modules = ["preventivo_generator_v2", "quintoquote"]
