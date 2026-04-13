@@ -19,7 +19,9 @@ import html
 import json
 import os
 import re
+import sys
 import threading
+import webbrowser
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -203,6 +205,12 @@ def configure_runtime_paths(config_path: Optional[Path] = None, assets_dir: Opti
         _ASSETS_DIR = assets_dir.expanduser().resolve()
     _cached_profile = None
     _cached_profile_path = None
+
+
+def normalize_cli_argv(argv: list[str]) -> tuple[list[str], bool]:
+    if len(argv) > 1 and argv[1].strip().lower() == "start":
+        return [argv[0], "--web", *argv[2:]], True
+    return argv, False
 
 
 def sanitize_hex_color(raw: str, fallback: str) -> str:
@@ -1432,7 +1440,13 @@ def build_extra_preventivi(base: Preventivo, scenario_lines: list[str]) -> list[
 #  WEB (OPZIONALE) - localhost
 # =========================
 
-def run_web(out_dir: Path, host: str = "127.0.0.1", port: int = 5000):
+def run_web(
+    out_dir: Path,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    open_browser: bool = False,
+    show_start_hint: bool = False,
+):
     try:
         from flask import Flask, request, render_template_string, send_file, redirect, url_for, jsonify
     except Exception as e:
@@ -3314,7 +3328,25 @@ def run_web(out_dir: Path, host: str = "127.0.0.1", port: int = 5000):
             return "File non trovato", 404
         return send_file(fpath)
 
-    print(f"\nWeb UI attiva su http://{host}:{port}\n")
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    app_url = f"http://{display_host}:{port}"
+    if open_browser:
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(app_url, new=2)
+            except Exception:
+                pass
+        threading.Timer(0.8, _open_browser).start()
+        print("\nQuintoQuote pronto.")
+        print(f"Clicca qui per l'applicazione: {app_url}")
+        print("Se il browser non si apre da solo, copia/incolla il link sopra.")
+        print("Premi CTRL+C per chiudere il server.\n")
+    else:
+        print("\nQuintoQuote pronto.")
+        print(f"Apri l'applicazione qui: {app_url}")
+        if show_start_hint:
+            print("Suggerimento: dopo pip install -e . puoi avviare tutto con QuintoQuote start.")
+        print("Premi CTRL+C per chiudere il server.\n")
     app.run(host=host, port=port, debug=False)
 
 # =========================
@@ -3322,7 +3354,10 @@ def run_web(out_dir: Path, host: str = "127.0.0.1", port: int = 5000):
 # =========================
 
 def main():
-    ap = argparse.ArgumentParser(description="Generatore Preventivi PDF (CLI o Web localhost).")
+    ap = argparse.ArgumentParser(
+        description="Generatore Preventivi PDF (CLI o Web localhost).",
+        epilog="Avvio rapido: QuintoQuote start | quintoquote start | python .\\quintoquote.py start",
+    )
     ap.add_argument("--web", action="store_true", help="Avvia la GUI web in localhost (richiede flask).")
     ap.add_argument("--host", default="127.0.0.1", help="Host bind per la web UI.")
     ap.add_argument("--port", type=int, default=5000, help="Porta della web UI.")
@@ -3356,7 +3391,8 @@ def main():
         ),
     )
 
-    args = ap.parse_args()
+    argv, used_start_alias = normalize_cli_argv(sys.argv)
+    args = ap.parse_args(argv[1:])
     out_dir = Path(args.out_dir)
     if not (1 <= args.port <= 65535):
         ap.exit(2, "Errore: --port deve essere compresa tra 1 e 65535.\n")
@@ -3367,7 +3403,13 @@ def main():
 
     try:
         if args.web:
-            run_web(out_dir, host=args.host, port=args.port)
+            run_web(
+                out_dir,
+                host=args.host,
+                port=args.port,
+                open_browser=used_start_alias,
+                show_start_hint=not used_start_alias,
+            )
             return
 
         # CLI

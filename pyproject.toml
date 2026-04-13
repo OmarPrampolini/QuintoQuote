@@ -26,6 +26,7 @@ classifiers = [
 
 [project.scripts]
 quintoquote = "preventivo_generator_v2:main"
+QuintoQuote = "preventivo_generator_v2:main"
 
 [tool.setuptools]
 py-modules = ["preventivo_generator_v2", "quintoquote"]

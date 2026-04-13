@@ -10,6 +10,63 @@ QuintoQuote trasforma i dati di una simulazione in un PDF commerciale pronto da 
 - branding agente completo
 - storico dei PDF generati
 
+## AVVIO IMMEDIATO POWERSHELL
+
+### Copia E Incolla Questo
+
+Prima installazione:
+
+```powershell
+Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
+pip install -e .
+```
+
+Sostituisci `C:\percorso\alla\cartella\QuintoQuote` con la cartella reale del progetto sul tuo PC.
+
+Avvio normale da quel momento in poi:
+
+```powershell
+Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
+QuintoQuote start
+```
+
+Se preferisci `cd` invece di `Set-Location`:
+
+```powershell
+cd 'C:\percorso\alla\cartella\QuintoQuote'
+QuintoQuote start
+```
+
+### CLICCA QUI PER L'APPLICAZIONE
+
+Dopo `QuintoQuote start`, QuintoQuote prova ad aprire il browser da solo.
+Se vuoi aprirla a mano, clicca questo link locale:
+
+[http://127.0.0.1:5000](http://127.0.0.1:5000)
+
+Con `start`, QuintoQuote:
+
+- avvia la web UI locale
+- prova ad aprire automaticamente il browser
+- stampa nel terminale `Clicca qui per l'applicazione: http://127.0.0.1:5000`
+- si chiude con `CTRL+C`
+
+### Se `QuintoQuote` Non Viene Riconosciuto
+
+Esegui una sola volta:
+
+```powershell
+Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
+pip install -e .
+```
+
+Se vuoi un fallback immediato senza installare il comando:
+
+```powershell
+Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
+python .\quintoquote.py start
+```
+
 ## IL PDF GENERATO PUO INCLUDERE IL BOLLINO OAM CLICCABILE E IL PROFILO AGENTE
 
 > [!IMPORTANT]
@@ -97,28 +154,35 @@ Installazione come comando locale:
 pip install -e .
 ```
 
-Dopo `pip install -e .` puoi usare anche il comando `quintoquote`.
+Dopo `pip install -e .` puoi usare i comandi `QuintoQuote` e `quintoquote`.
 
 ## Avvio Rapido
 
-Web UI locale:
+Comando consigliato:
 
 ```bash
-python quintoquote.py --web
+QuintoQuote start
 ```
 
 oppure:
 
 ```bash
-quintoquote --web
+quintoquote start
 ```
 
-Apri il browser su `http://127.0.0.1:5000` e vai su `Impostazioni` per configurare il profilo agente.
+fallback senza installazione del comando:
+
+```bash
+python quintoquote.py start
+```
+
+Con `start`, QuintoQuote prova anche ad aprire il browser da solo.
+Se serve, apri manualmente `http://127.0.0.1:5000`.
 
 Per tenere separata questa istanza da un altro progetto simile o personale, usa porta e file locali dedicati:
 
 ```bash
-python quintoquote.py --web \
+QuintoQuote start \
   --port 5010 \
   --config-path ./.demo/config-public.json \
   --assets-dir ./.demo/assets-public
