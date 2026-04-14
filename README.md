@@ -26,6 +26,8 @@
   <img src="docs/screenshots/demo.gif" alt="QuintoQuote demo" width="720"/>
 </p>
 
+> *QuintoQuote e un progetto open source pensato per aiutare agenti, collaboratori e realta non strutturate a preparare preventivi PDF chiari, ordinati e professionali. E uno strumento di supporto operativo e non sostituisce mai la documentazione bancaria ufficiale, precontrattuale o contrattuale, ne le verifiche, le delibere o le condizioni definitive del soggetto finanziatore.*
+
 ---
 
 ## Provalo in 30 secondi
@@ -211,7 +213,7 @@ Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento
 
 ## Note legali
 
-I documenti generati hanno finalita illustrativa e non sostituiscono il SECCI ne la documentazione precontrattuale ufficiale del finanziatore. I valori economici devono essere verificati sul portale ufficiale dell'istituto mandante prima di qualsiasi utilizzo commerciale.
+QuintoQuote e un progetto open source pensato per aiutare agenti, collaboratori e realta non strutturate a preparare preventivi PDF chiari, ordinati e professionali. E uno strumento di supporto operativo e non sostituisce mai la documentazione bancaria ufficiale, precontrattuale o contrattuale, ne le verifiche, le delibere o le condizioni definitive del soggetto finanziatore. I valori economici riportati nei PDF generati hanno finalita esclusivamente illustrativa e devono essere verificati sul portale ufficiale dell'istituto mandante prima di qualsiasi utilizzo commerciale.
 
 ## Licenza
 
