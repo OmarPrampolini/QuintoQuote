@@ -1,198 +1,164 @@
-# QuintoQuote
+<p align="center">
+  <strong style="font-size:2em">QuintoQuote</strong>
+</p>
 
-Generatore di preventivi PDF professionali per Cessione del Quinto e Delega di Pagamento.
+<p align="center">
+  Generatore open source di preventivi PDF professionali<br>
+  per <strong>Cessione del Quinto</strong> e <strong>Delega di Pagamento</strong>.
+</p>
 
-QuintoQuote trasforma i dati di una simulazione in un PDF commerciale pronto da condividere con il cliente. Include:
+<p align="center">
+  <strong>Locale. Veloce. Personalizzabile. Pronto da inviare al cliente.</strong>
+</p>
 
-- web UI locale con anteprima live
-- CLI guidata
-- CLI non interattiva per automazioni o batch
-- branding agente completo
-- storico dei PDF generati
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+"/>
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
+  <img src="https://img.shields.io/badge/local--first-nessun%20SaaS-orange" alt="Local-first"/>
+  <img src="https://img.shields.io/badge/open%20source-%E2%9C%93-brightgreen" alt="Open Source"/>
+</p>
 
-## AVVIO IMMEDIATO POWERSHELL
+<p align="center">
+  Web UI locale &nbsp;&middot;&nbsp; CLI &nbsp;&middot;&nbsp; Branding agente &nbsp;&middot;&nbsp; Bollino OAM cliccabile &nbsp;&middot;&nbsp; Multi-scenario
+</p>
 
-### Copia E Incolla Questo
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="QuintoQuote demo" width="720"/>
+</p>
 
-Prima installazione:
+---
 
-```powershell
-Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
+## Provalo in 30 secondi
+
+```bash
 pip install -e .
-```
-
-Sostituisci `C:\percorso\alla\cartella\QuintoQuote` con la cartella reale del progetto sul tuo PC.
-
-Avvio normale da quel momento in poi:
-
-```powershell
-Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
 QuintoQuote start
 ```
 
-Se preferisci `cd` invece di `Set-Location`:
+Si apre il browser. Compili il form. Scarichi il PDF. Fine.
 
-```powershell
-cd 'C:\percorso\alla\cartella\QuintoQuote'
-QuintoQuote start
-```
+---
 
-### CLICCA QUI PER L'APPLICAZIONE
-
-Dopo `QuintoQuote start`, QuintoQuote prova ad aprire il browser da solo.
-Se vuoi aprirla a mano, clicca questo link locale:
-
-[http://127.0.0.1:5000](http://127.0.0.1:5000)
-
-Con `start`, QuintoQuote:
-
-- avvia la web UI locale
-- prova ad aprire automaticamente il browser
-- stampa nel terminale `Clicca qui per l'applicazione: http://127.0.0.1:5000`
-- si chiude con `CTRL+C`
-
-### Se `QuintoQuote` Non Viene Riconosciuto
-
-Esegui una sola volta:
-
-```powershell
-Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
-pip install -e .
-```
-
-Se vuoi un fallback immediato senza installare il comando:
-
-```powershell
-Set-Location 'C:\percorso\alla\cartella\QuintoQuote'
-python .\quintoquote.py start
-```
-
-## IL PDF GENERATO PUO INCLUDERE IL BOLLINO OAM CLICCABILE E IL PROFILO AGENTE
-
-> [!IMPORTANT]
-> **Il PDF puo mostrare il profilo agente e aggiungere il bollino OAM cliccabile.**
-> Per attivarlo vai in **Impostazioni > Profilo Agente (Branding)**, compila:
-> **Nome Agente**, **Rete Mandante**, **Codice OAM**, **Telefono**, colori e, nel blocco **Immagini**, carica il file nel campo **Bollino OAM**.
-
-> [!TIP]
-> Quando carichi il bollino OAM nelle Impostazioni, QuintoQuote lo inserisce nel PDF e lo rende cliccabile verso [organismo-am.it](https://www.organismo-am.it/).
-> Lo stesso profilo agente viene usato anche nella testata del PDF.
-
-## Screenshot
-
-### Nuovo Preventivo
-
-![Nuovo preventivo](docs/screenshots/ui-nuovo-preventivo.png)
-
-### Profilo Agente E Branding
-
-Qui configuri esattamente i dati che finiscono nel PDF: nome agente, rete mandante, codice OAM, telefono, colori, bollino OAM e logo.
-
-![Profilo agente e branding](docs/screenshots/ui-impostazioni-profilo.png)
-
-### Storico PDF
-
-![Storico preventivi](docs/screenshots/ui-storico.png)
-
-### PDF Di Esempio
+## Il risultato
 
 | Pagina 1 | Pagina 2 |
 | --- | --- |
 | ![PDF esempio pagina 1](docs/screenshots/pdf-esempio-pagina-1.png) | ![PDF esempio pagina 2](docs/screenshots/pdf-esempio-pagina-2.png) |
 
-## Cosa Personalizzi
+Questo e il tipo di PDF che puoi inviare subito al cliente: chiaro, elegante, brandizzato e pronto all'uso. Hero card rata/TAEG, timeline finanziaria, tabella economica dettagliata, bollino OAM cliccabile. Tutto con i tuoi colori e il tuo nome.
 
-- Profilo agente: nome, rete mandante, codice OAM, telefono
-- Colori del PDF: primario e accento
-- Bollino OAM: JPG/PNG caricato dalla pagina Impostazioni
-- Logo agente: opzionale
-- Testi finali: disclaimer, note e closing modificabili anche dall'anteprima
+---
 
-## Come Attivare Profilo Agente E Bollino OAM
+## La web UI
 
-1. Avvia la web UI.
-2. Apri `Impostazioni`.
-3. Compila `Nome Agente`, `Rete Mandante`, `Codice OAM` e `Telefono`.
-4. Carica il file nel campo `Bollino OAM`.
-5. Facoltativo: carica anche `Logo Agente`.
-6. Salva.
-7. Torna su `Nuovo`, compila il preventivo e scarica il PDF.
+![Nuovo preventivo](docs/screenshots/ui-nuovo-preventivo.png)
 
-Risultato:
+Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'anteprima in tempo reale. Quando sei soddisfatto, scarichi il PDF.
 
-- il profilo agente compare nella testata del PDF
-- il bollino OAM viene inserito nel PDF
-- il bollino OAM e cliccabile
+---
 
-## Funzionalita
+## Perche QuintoQuote
 
-- PDF professionale con hero card rata/TAEG, timeline e tabella economica
-- Profilo agente e branding configurabile
-- Bollino OAM cliccabile nel PDF
-- Multi-scenario: piu opzioni nello stesso PDF, una pagina per scenario
-- Anteprima live nel browser durante la compilazione
-- Editing inline di disclaimer, note e closing prima del download
-- Storico dei PDF generati con download diretto
+- **Gira in locale sul tuo PC.** Nessun server, nessun cloud, nessun dato che esce.
+- **Nessun SaaS, nessun abbonamento.** Installi e usi. Per sempre.
+- **PDF professionali gia pronti.** Non servono template, non serve Canva, non serve Word.
+- **Branding agente completo.** Nome, rete, OAM, colori, logo, bollino: tutto tuo.
+- **Bollino OAM cliccabile.** Chi riceve il PDF clicca e verifica la tua iscrizione.
+- **Multi-scenario.** Piu opzioni nello stesso PDF, una pagina per scenario.
+- **Adatto a uso reale.** Non e una demo. E quello che usi ogni giorno.
 
-## Requisiti
+---
 
-- Python 3.10+
-- `reportlab`
-- `flask` per la modalita web
+## Per chi e
+
+- Agenti in attivita finanziaria
+- Collaboratori OAM
+- Mediatori creditizi
+- Reti vendita e strutture commerciali
+- Professionisti che vogliono generare preventivi in locale, senza SaaS
+
+---
+
+## Cosa fa, in pratica
+
+| Funzione | Dettaglio |
+| --- | --- |
+| PDF premium | Hero card rata/TAEG, KPI, timeline, tabella, note legali |
+| Anteprima live | Il preventivo si aggiorna mentre compili il form |
+| Editing inline | Modifica disclaimer, note e closing direttamente nell'anteprima |
+| Branding agente | Nome, rete mandante, codice OAM, telefono, colori primario/accento |
+| Bollino OAM | JPG/PNG caricato dalle Impostazioni, cliccabile nel PDF |
+| Logo agente | Opzionale, visibile nell'header del PDF |
+| Multi-scenario | Piu combinazioni rata/durata nello stesso documento |
+| Storico PDF | Tutti i preventivi generati, scaricabili dalla UI |
+| CLI guidata | Prompt interattivo da terminale |
+| CLI batch | `--non-interactive` per script e automazioni |
+
+---
+
+## Configurazione agente
+
+![Profilo agente e branding](docs/screenshots/ui-impostazioni-profilo.png)
+
+1. Avvia QuintoQuote
+2. Vai in **Impostazioni**
+3. Compila nome, rete, OAM, telefono
+4. Scegli i colori
+5. Carica bollino OAM e logo
+6. Salva
+
+Da quel momento ogni PDF che generi porta il tuo branding.
+
+---
+
+## Storico
+
+![Storico preventivi](docs/screenshots/ui-storico.png)
+
+Tutti i PDF generati restano disponibili per il download.
+
+---
 
 ## Installazione
 
-Installazione veloce:
+### Requisiti
 
-```bash
-pip install -r requirements.txt
-```
+- Python 3.10+
+- `reportlab`
+- `flask`
 
-Installazione come comando locale:
+### Setup
 
 ```bash
 pip install -e .
 ```
 
-Dopo `pip install -e .` puoi usare i comandi `QuintoQuote` e `quintoquote`.
+Dopo l'installazione hai il comando `QuintoQuote` disponibile ovunque.
 
-## Avvio Rapido
-
-Comando consigliato:
+### Avvio
 
 ```bash
 QuintoQuote start
 ```
 
-oppure:
+Apre la web UI e prova ad aprire il browser automaticamente.
+Se serve, vai a mano su [http://127.0.0.1:5000](http://127.0.0.1:5000).
+
+### Avvio su porta diversa
 
 ```bash
-quintoquote start
+QuintoQuote start --port 5010
 ```
 
-fallback senza installazione del comando:
+### Fallback senza installazione
 
 ```bash
 python quintoquote.py start
 ```
 
-Con `start`, QuintoQuote prova anche ad aprire il browser da solo.
-Se serve, apri manualmente `http://127.0.0.1:5000`.
+---
 
-Per tenere separata questa istanza da un altro progetto simile o personale, usa porta e file locali dedicati:
-
-```bash
-QuintoQuote start \
-  --port 5010 \
-  --config-path ./.demo/config-public.json \
-  --assets-dir ./.demo/assets-public
-```
-
-In questo modo:
-
-- non riusi per errore la stessa porta di un'altra istanza
-- non condividi il `config.json` locale con un altro progetto
-- non condividi la cartella `assets/` degli upload
+## Uso da CLI
 
 CLI guidata:
 
@@ -216,7 +182,7 @@ python quintoquote.py --non-interactive \
   --importo-erogato 30000
 ```
 
-Multi-scenario via CLI:
+Multi-scenario:
 
 ```bash
 python quintoquote.py --non-interactive \
@@ -229,36 +195,21 @@ python quintoquote.py --non-interactive \
   --scenario "400;120;4.8;5.1;35000"
 ```
 
-Formato scenario:
+Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento]`
 
-```text
-rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento]
-```
+---
 
-## File Locali Generati
+## Roadmap
 
-Questi file o cartelle sono locali e non vanno pubblicati nel repository:
+- [ ] Refactor in moduli separati
+- [ ] Template PDF aggiuntivi
+- [ ] Export scenari comparativo
+- [ ] Configurazioni branding avanzate
+- [ ] Packaging per distribuzione standalone
 
-- `config.json`
-- `assets/`
-- `output_preventivi/`
-- eventuali percorsi personalizzati passati a `--config-path` o `--assets-dir`
+---
 
-Sono gia inclusi in `.gitignore`.
-
-## Struttura Del Repository
-
-```text
-quintoquote.py              # entrypoint pubblico della CLI
-preventivo_generator_v2.py  # core applicativo (CLI + web + PDF)
-requirements.txt            # dipendenze runtime
-pyproject.toml              # metadati progetto e script "quintoquote"
-docs/screenshots/           # screenshot usati nel README
-LICENSE
-README.md
-```
-
-## Note Legali
+## Note legali
 
 I documenti generati hanno finalita illustrativa e non sostituiscono il SECCI ne la documentazione precontrattuale ufficiale del finanziatore. I valori economici devono essere verificati sul portale ufficiale dell'istituto mandante prima di qualsiasi utilizzo commerciale.
 
