@@ -108,7 +108,46 @@ function Ensure-Repo([string]$Destination, [string]$BranchName, [string]$GitUrl,
     }
 }
 
+function Ensure-Tesseract {
+    Write-Step "Controllo Tesseract OCR"
+    $tesseractCmd = Get-Command tesseract -ErrorAction SilentlyContinue
+    if ($tesseractCmd) {
+        Write-Host "Tesseract OCR già installato." -ForegroundColor Green
+        return $tesseractCmd.Source
+    }
+
+    $commonPath = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if (Test-Path $commonPath) {
+        Write-Host "Tesseract OCR trovato in $commonPath." -ForegroundColor Green
+        return $commonPath
+    }
+
+    Write-Step "Tesseract OCR non trovato. Tento l'installazione tramite winget..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw "Tesseract OCR è obbligatorio ma winget non è disponibile. Installa Tesseract manualmente da https://github.com/UB-Mannheim/tesseract/wiki e riprova."
+    }
+
+    & $winget.Source install --id UB_Mannheim.TesseractOCR --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installazione di Tesseract OCR fallita. Installa Tesseract manualmente per continuare."
+    }
+
+    # Refresh path or check common location again
+    if (Test-Path $commonPath) {
+        return $commonPath
+    }
+    
+    $tesseractCmd = Get-Command tesseract -ErrorAction SilentlyContinue
+    if ($tesseractCmd) {
+        return $tesseractCmd.Source
+    }
+
+    throw "Tesseract OCR installato ma non trovato nel PATH. Riavvia la shell o aggiungi manualmente il percorso di installazione al PATH."
+}
+
 $python = Resolve-PythonCommand
+$tesseractPath = Ensure-Tesseract
 Ensure-Repo -Destination $TargetDir -BranchName $Branch -GitUrl $RepoUrl -ZipUrl $ArchiveUrl -LocalSource $SourcePath
 
 $repoRoot = (Resolve-Path $TargetDir).Path
@@ -145,16 +184,9 @@ if (-not (Test-Path $launcher)) {
     throw "Launcher non trovato: $launcher"
 }
 
-$tesseractCmd = Get-Command tesseract -ErrorAction SilentlyContinue
-$tesseractPath = if ($tesseractCmd) { $tesseractCmd.Source } elseif (Test-Path "C:\\Program Files\\Tesseract-OCR\\tesseract.exe") { "C:\\Program Files\\Tesseract-OCR\\tesseract.exe" } else { "" }
-
 Write-Host ""
 Write-Host "QuintoQuote installato in $repoRoot" -ForegroundColor Green
-if ($tesseractPath) {
-    Write-Host "OCR locale attivo: $tesseractPath" -ForegroundColor Green
-} else {
-    Write-Host "OCR opzionale non trovato. Per scansioni e screenshot installa Tesseract OCR." -ForegroundColor Yellow
-}
+Write-Host "OCR locale attivo: $tesseractPath" -ForegroundColor Green
 Write-Host "Avvio successivo: $launcher start" -ForegroundColor DarkGray
 Write-Host ""
 
