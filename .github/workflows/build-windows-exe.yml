@@ -25,12 +25,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install project dependencies
+      - name: Create virtualenv and install project dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install pyinstaller
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e .
+          .\.venv\Scripts\python.exe -m pip install pyinstaller
 
       - name: Install Tesseract OCR
         shell: pwsh
