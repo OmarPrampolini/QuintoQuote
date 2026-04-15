@@ -120,10 +120,12 @@ Nella web UI trovi anche la sezione **Dossier**.
 - Accetta anche screenshot e scansioni in JPG/PNG tramite OCR locale
 - Classifica i file con parole chiave, senza AI
 - Estrae i campi con regex e anchor text
+- Permette analisi incrementale: aggiungi un documento, poi un altro, poi salvi la revisione e continui sullo stesso dossier
 - Mostra i dati estratti in una schermata di revisione, modificabili prima del prefill
 - Aggrega i dati trovati e precompila Allegato E e Allegato C
 - Include parser dedicati per cedolino NoiPA/MEF e contratto di finanziamento/delega in PDF testuale
 - Usa Tesseract OCR in locale come fallback sui PDF scannerizzati e come parser principale per immagini
+- Riconosce anche pattern sintetici OCR tipo `300 euro x 120 mesi` come possibile `rata` + `durata`, con montante derivato automaticamente
 
 Nota: per OCR serve `tesseract.exe` installato sul PC. Se non e in `PATH`, puoi indicarlo con la variabile d'ambiente `QUINTOQUOTE_TESSERACT_PATH`.
 

@@ -1848,6 +1848,36 @@ class AggregatedCaseField:
     source_document_label: str
 
 
+def _document_result_to_dict(result: DocumentExtractionResult) -> dict[str, object]:
+    return {
+        "filename": result.filename,
+        "document_key": result.document_key,
+        "document_label": result.document_label,
+        "page_count": result.page_count,
+        "text_length": result.text_length,
+        "keyword_hits": result.keyword_hits,
+        "extracted_fields": dict(result.extracted_fields),
+        "warnings": list(result.warnings),
+    }
+
+
+def _document_result_from_dict(data: dict[str, object]) -> DocumentExtractionResult:
+    return DocumentExtractionResult(
+        filename=sanitize_pdf_text(data.get("filename", "")),
+        document_key=sanitize_pdf_text(data.get("document_key", "")),
+        document_label=sanitize_pdf_text(data.get("document_label", "")),
+        page_count=int(data.get("page_count", 0) or 0),
+        text_length=int(data.get("text_length", 0) or 0),
+        keyword_hits=int(data.get("keyword_hits", 0) or 0),
+        extracted_fields={
+            sanitize_pdf_text(name): sanitize_pdf_text(value)
+            for name, value in dict(data.get("extracted_fields", {}) or {}).items()
+            if sanitize_pdf_text(name) and sanitize_pdf_text(value)
+        },
+        warnings=[sanitize_pdf_text(item) for item in list(data.get("warnings", []) or []) if sanitize_pdf_text(item)],
+    )
+
+
 _MONEY_CAPTURE = r"((?:EUR\s*)?(?:€\s*)?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2,3})|(?:EUR\s*)?(?:€\s*)?\d+(?:,\d{2,3})?)"
 _DATE_CAPTURE = r"([0-3]?\d[\/\.-][01]?\d[\/\.-](?:\d{4}|\d{2}))"
 _DOSSIER_PDF_EXTENSIONS = {".pdf"}
@@ -1855,6 +1885,7 @@ _DOSSIER_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 _DOSSIER_SUPPORTED_EXTENSIONS = _DOSSIER_PDF_EXTENSIONS | _DOSSIER_IMAGE_EXTENSIONS
 _OCR_TRIGGER_TEXT_LENGTH = 80
 _LOW_TEXT_WARNING_LENGTH = 50
+_ALLOWED_INSTALLMENT_COUNTS = {48, 60, 72, 84, 96, 108, 120}
 _TESSERACT_CANDIDATE_PATHS = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -2113,6 +2144,52 @@ def _new_runtime_temp_path(suffix: str) -> Path:
     return _get_runtime_temp_dir() / f"qq_{uuid.uuid4().hex}{suffix}"
 
 
+def _get_dossier_state_dir() -> Path:
+    path = _get_runtime_temp_dir() / "dossier_sessions"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _get_dossier_state_path(state_id: str) -> Path:
+    safe_state_id = re.sub(r"[^a-zA-Z0-9_-]", "", state_id or "")
+    if not safe_state_id:
+        raise ValueError("Identificativo dossier non valido.")
+    return _get_dossier_state_dir() / f"{safe_state_id}.json"
+
+
+def load_dossier_state(state_id: str) -> tuple[list[DocumentExtractionResult], dict[str, str]]:
+    path = _get_dossier_state_path(state_id)
+    if not path.exists():
+        return [], {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    results = [_document_result_from_dict(item) for item in list(payload.get("results", []) or [])]
+    manual_values = {
+        field_def.name: sanitize_pdf_text(dict(payload.get("manual_values", {}) or {}).get(field_def.name, ""))
+        for field_def in CASE_FIELD_DEFS
+        if sanitize_pdf_text(dict(payload.get("manual_values", {}) or {}).get(field_def.name, ""))
+    }
+    return results, manual_values
+
+
+def save_dossier_state(state_id: str, results: list[DocumentExtractionResult], manual_values: dict[str, str]) -> None:
+    path = _get_dossier_state_path(state_id)
+    payload = {
+        "results": [_document_result_to_dict(result) for result in results],
+        "manual_values": {
+            field_def.name: sanitize_pdf_text(manual_values.get(field_def.name, ""))
+            for field_def in CASE_FIELD_DEFS
+            if sanitize_pdf_text(manual_values.get(field_def.name, ""))
+        },
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def clear_dossier_state(state_id: str) -> None:
+    path = _get_dossier_state_path(state_id)
+    if path.exists():
+        path.unlink(missing_ok=True)
+
+
 def _search_first_group(pattern: str, text: str, flags: int = re.IGNORECASE | re.MULTILINE | re.DOTALL) -> str:
     match = re.search(pattern, text, flags=flags)
     if not match:
@@ -2332,6 +2409,36 @@ def _extract_first_pattern_value(field_name: str, text: str) -> str:
         if not _reject_extracted_value(field_name, cleaned):
             return cleaned
     return ""
+
+
+def _extract_rate_duration_expression_fields(text: str) -> dict[str, str]:
+    rate_capture = r"(\d{1,3}(?:[.\s]\d{3})*(?:,\d{2,3})|\d+(?:,\d{2,3})?)"
+    duration_capture = r"(48|60|72|84|96|108|120)"
+    patterns = (
+        rf"(?im)\b{rate_capture}\s*(?:euro|eur|€)?\s*[x×]\s*{duration_capture}\s*(?:mesi|rate)?\b",
+        rf"(?im)\b(?:rata(?:\s+mensile)?\s*(?:di)?\s*)?{rate_capture}\s*(?:euro|eur|€)?\s*[x×]\s*{duration_capture}\s*(?:mesi|rate)?\b",
+        rf"(?im)\b{rate_capture}\s*(?:euro|eur|€)?\s*per\s*{duration_capture}\s*(?:mesi|rate)\b",
+    )
+    extracted: dict[str, str] = {}
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        if not match:
+            continue
+        rate_value = _clean_extracted_value("monthly_installment", match.group(1))
+        duration_value = _clean_extracted_value("installment_count", match.group(2))
+        try:
+            rate_value = _format_money_it(round(parse_decimal_loose(rate_value), 2))
+        except Exception:
+            pass
+        try:
+            duration_int = int(re.sub(r"[^\d]", "", duration_value))
+        except Exception:
+            duration_int = 0
+        if rate_value and duration_int in _ALLOWED_INSTALLMENT_COUNTS:
+            extracted["monthly_installment"] = rate_value
+            extracted["installment_count"] = str(duration_int)
+            break
+    return extracted
 
 
 def _run_tesseract_ocr(input_path: Path) -> str:
@@ -2608,6 +2715,14 @@ def extract_document_result(filename: str, raw_bytes: bytes) -> DocumentExtracti
         document_label = special_label or document_label
         skip_text_fallback = True
 
+    expression_fields = _extract_rate_duration_expression_fields(normalized)
+    if expression_fields:
+        for field_name, value in expression_fields.items():
+            extracted.setdefault(field_name, value)
+        if document_key == "documento_generico":
+            document_key = "documento_finanziario"
+            document_label = "Documento finanziario"
+
     if not skip_text_fallback:
         for field in CASE_FIELD_DEFS:
             if field.name in extracted:
@@ -2660,6 +2775,37 @@ def aggregated_fields_to_dict(fields: list[AggregatedCaseField]) -> dict[str, st
     return {field.name: field.value for field in fields}
 
 
+def extract_manual_case_values(raw: dict[str, object]) -> dict[str, str]:
+    return {
+        field_def.name: sanitize_pdf_text(raw.get(field_def.name, ""))
+        for field_def in CASE_FIELD_DEFS
+        if sanitize_pdf_text(raw.get(field_def.name, ""))
+    }
+
+
+def merge_reviewed_case_fields(
+    results: list[DocumentExtractionResult],
+    manual_values: Optional[dict[str, str]] = None,
+    aggregated_fields: Optional[list[AggregatedCaseField]] = None,
+) -> list[AggregatedCaseField]:
+    by_name = {
+        field.name: field
+        for field in (aggregated_fields if aggregated_fields is not None else aggregate_document_results(results))
+    }
+    for field_def in CASE_FIELD_DEFS:
+        manual_value = sanitize_pdf_text((manual_values or {}).get(field_def.name, ""))
+        if not manual_value:
+            continue
+        by_name[field_def.name] = AggregatedCaseField(
+            name=field_def.name,
+            label=field_def.label,
+            value=manual_value,
+            source_filename="Revisione utente",
+            source_document_label="Dato confermato/modificato",
+        )
+    return infer_aggregated_fields([by_name[field_def.name] for field_def in CASE_FIELD_DEFS if field_def.name in by_name])
+
+
 def _parse_decimal_maybe(raw: str) -> Optional[float]:
     try:
         return parse_decimal_loose(raw)
@@ -2697,17 +2843,15 @@ def infer_aggregated_fields(fields: list[AggregatedCaseField]) -> list[Aggregate
         except Exception:
             count = None
 
-    allowed_durations = {48, 60, 72, 84, 96, 108, 120}
-
-    if installment is not None and count in allowed_durations and "total_ceded" not in by_name:
+    if installment is not None and count in _ALLOWED_INSTALLMENT_COUNTS and "total_ceded" not in by_name:
         add_inferred("total_ceded", _format_money_it(round(installment * count, 2)), "Derivato da rata x durata")
 
     if installment is not None and total_ceded is not None and "installment_count" not in by_name and installment > 0:
         derived_count = round(total_ceded / installment)
-        if derived_count in allowed_durations and abs((installment * derived_count) - total_ceded) <= 0.5:
+        if derived_count in _ALLOWED_INSTALLMENT_COUNTS and abs((installment * derived_count) - total_ceded) <= 0.5:
             add_inferred("installment_count", str(int(derived_count)), "Derivato da montante / rata")
 
-    if total_ceded is not None and count in allowed_durations and "monthly_installment" not in by_name and count > 0:
+    if total_ceded is not None and count in _ALLOWED_INSTALLMENT_COUNTS and "monthly_installment" not in by_name and count > 0:
         add_inferred("monthly_installment", _format_money_it(round(total_ceded / count, 2)), "Derivato da montante / durata")
 
     if loan_amount is not None and "net_disbursed" not in by_name:
@@ -2826,13 +2970,14 @@ def run_web(
     show_start_hint: bool = False,
 ):
     try:
-        from flask import Flask, request, render_template_string, send_file, redirect, url_for, jsonify
+        from flask import Flask, request, render_template_string, send_file, redirect, url_for, jsonify, session
     except Exception as e:
         print("Flask non installato. Per usare --web fai: pip install flask")
         raise
     import json as _json
 
     app = Flask(__name__)
+    app.secret_key = os.environ.get("QUINTOQUOTE_SESSION_SECRET") or f"quintoquote-{uuid.uuid4().hex}"
 
     # ─── CSS Design System ───
     CSS = """
@@ -4267,6 +4412,15 @@ def run_web(
         <strong>cedolino NoiPA/MEF</strong> e <strong>contratto di finanziamento/delega</strong> in PDF testuale.
         {{ ocr_status_message }}
       </div>
+      <div class="helper-text" style="margin:12px 0 18px">
+        Puoi costruire il dossier poco alla volta: aggiungi un documento adesso, un altro dopo, salva la revisione e continua finché non premi <strong>Nuova analisi</strong>.
+      </div>
+
+      {% if notice %}
+      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#d1fae5;font-size:13px">
+        {{ notice }}
+      </div>
+      {% endif %}
 
       {% if error %}
       <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
@@ -4280,43 +4434,46 @@ def run_web(
           <div class="helper-text">
             Esempi utili: cedolino NoiPA, contratto o preventivo finanziario, modulo gia compilato, documento anagrafico, screenshot o scansione.
           </div>
-          <input type="file" name="documenti" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg" multiple required/>
+          <input type="file" name="documenti" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg" multiple {% if not results %}required{% endif %}/>
         </div>
-        <button type="submit" class="btn-primary" style="margin-top:0">Analizza documenti</button>
-      </form>
-
-      {% if results %}
-      <div class="section-title" style="margin-top:24px">📄 File Analizzati</div>
-      <div class="dossier-list">
-        {% for result in results %}
-        <div class="dossier-item">
-          <div class="dossier-item-head">
-            <div>
-              <h4>{{ result.filename }}</h4>
-              <div class="helper-text">{{ result.document_label }}</div>
-            </div>
-            <div class="dossier-badges">
-              <span>{{ result.page_count }} pag.</span>
-              <span>{{ result.text_length }} caratteri</span>
-              <span>{{ result.extracted_fields|length }} campi</span>
-            </div>
-          </div>
-          {% if result.warnings %}
-          <div class="warning-list">
-            {% for warning in result.warnings %}
-            <div>• {{ warning }}</div>
-            {% endfor %}
-          </div>
+        <div class="preview-actions" style="margin-top:14px">
+          <button type="submit" class="btn-primary" style="flex:1;margin:0">Analizza e aggiungi documenti</button>
+          {% if results %}
+          <button type="submit" formaction="/dossier/review" class="btn-secondary" style="flex:1;margin:0">Salva revisione</button>
           {% endif %}
         </div>
-        {% endfor %}
-      </div>
 
-      <div class="section-title" style="margin-top:24px">🧾 Revisione Dati</div>
-      <div class="info-banner">
-        Qui puoi controllare i dati estratti, correggerli, integrare quelli mancanti e poi aprire il modulo gia precompilato.
-      </div>
-      <form method="post">
+        {% if results %}
+        <div class="section-title" style="margin-top:24px">📄 File Analizzati</div>
+        <div class="dossier-list">
+          {% for result in results %}
+          <div class="dossier-item">
+            <div class="dossier-item-head">
+              <div>
+                <h4>{{ result.filename }}</h4>
+                <div class="helper-text">{{ result.document_label }}</div>
+              </div>
+              <div class="dossier-badges">
+                <span>{{ result.page_count }} pag.</span>
+                <span>{{ result.text_length }} caratteri</span>
+                <span>{{ result.extracted_fields|length }} campi</span>
+              </div>
+            </div>
+            {% if result.warnings %}
+            <div class="warning-list">
+              {% for warning in result.warnings %}
+              <div>• {{ warning }}</div>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="section-title" style="margin-top:24px">🧾 Revisione Dati</div>
+        <div class="info-banner">
+          Qui puoi controllare i dati estratti, correggerli, integrare quelli mancanti, aggiungere altri documenti e poi aprire il modulo gia precompilato.
+        </div>
         {% for section in review_sections %}
         <div class="section-title" style="margin-top:{{ '0' if loop.first else '20px' }}">🧩 {{ section.title }}</div>
         <div class="form-grid">
@@ -4339,6 +4496,12 @@ def run_web(
           <button type="submit" formaction="/moduli/allegato-e/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato E precompilato</button>
           <button type="submit" formaction="/moduli/allegato-c/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato C precompilato</button>
         </div>
+        {% endif %}
+      </form>
+
+      {% if results %}
+      <form method="post" action="/dossier/reset" style="margin-top:12px">
+        <button type="submit" class="btn-secondary" style="width:100%;margin:0">Nuova analisi</button>
       </form>
       {% endif %}
     </div>
@@ -4444,12 +4607,42 @@ def run_web(
             error=error,
         )
 
+    def get_dossier_state_id(create: bool = False) -> str:
+        state_id = sanitize_pdf_text(session.get("dossier_state_id", ""))
+        if state_id:
+            return state_id
+        if not create:
+            return ""
+        state_id = uuid.uuid4().hex
+        session["dossier_state_id"] = state_id
+        return state_id
+
+    def load_current_dossier_state() -> tuple[list[DocumentExtractionResult], dict[str, str]]:
+        state_id = get_dossier_state_id(create=False)
+        if not state_id:
+            return [], {}
+        try:
+            return load_dossier_state(state_id)
+        except Exception:
+            return [], {}
+
+    def save_current_dossier_state(results: list[DocumentExtractionResult], manual_values: dict[str, str]) -> None:
+        state_id = get_dossier_state_id(create=True)
+        save_dossier_state(state_id, results, manual_values)
+
+    def clear_current_dossier_state() -> None:
+        state_id = get_dossier_state_id(create=False)
+        if state_id:
+            clear_dossier_state(state_id)
+        session.pop("dossier_state_id", None)
+
     def render_dossier_page(
         results: Optional[list[DocumentExtractionResult]] = None,
-        aggregated_fields: Optional[list[AggregatedCaseField]] = None,
+        manual_values: Optional[dict[str, str]] = None,
         error: str = "",
+        notice: str = "",
     ):
-        reviewed_fields = infer_aggregated_fields(aggregated_fields or [])
+        reviewed_fields = merge_reviewed_case_fields(results or [], manual_values or {})
         return render_page(
             DOSSIER_CONTENT,
             page="dossier",
@@ -4459,6 +4652,7 @@ def run_web(
             review_sections=build_review_sections(reviewed_fields),
             ocr_status_message=get_ocr_status_message(),
             error=error,
+            notice=notice,
         )
 
     def _render_preview_html(preventivi: list, prof: BrandingProfile, text_overrides: Optional[dict] = None) -> str:
@@ -4734,15 +4928,22 @@ def run_web(
 
     @app.get("/dossier")
     def dossier_get():
-        return render_dossier_page()
+        results, manual_values = load_current_dossier_state()
+        return render_dossier_page(results=results, manual_values=manual_values)
 
     @app.post("/dossier")
     def dossier_post():
+        existing_results, manual_values = load_current_dossier_state()
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
         uploaded_files = [file for file in request.files.getlist("documenti") if file and file.filename]
         if not uploaded_files:
-            return render_dossier_page(error="Carica almeno un PDF, JPG o PNG da analizzare."), 400
+            return render_dossier_page(
+                results=existing_results,
+                manual_values=manual_values,
+                error="Carica almeno un PDF, JPG o PNG da analizzare.",
+            ), 400
 
-        results: list[DocumentExtractionResult] = []
+        new_results: list[DocumentExtractionResult] = []
         errors: list[str] = []
         for file in uploaded_files:
             safe_name = Path(file.filename).name
@@ -4754,16 +4955,30 @@ def run_web(
                 errors.append(f"{safe_name}: file vuoto.")
                 continue
             try:
-                results.append(extract_document_result(safe_name, data))
+                new_results.append(extract_document_result(safe_name, data))
             except Exception as exc:
                 errors.append(f"{safe_name}: {exc}")
 
-        aggregated_fields = aggregate_document_results(results)
-        if not results and errors:
+        if not new_results and errors and not existing_results:
             return render_dossier_page(error=" ".join(errors)), 400
 
+        all_results = existing_results + new_results
+        save_current_dossier_state(all_results, manual_values)
         error_text = " ".join(errors) if errors else ""
-        return render_dossier_page(results=results, aggregated_fields=aggregated_fields, error=error_text)
+        notice = f"Dossier aggiornato: {len(all_results)} documenti analizzati." if new_results else ""
+        return render_dossier_page(results=all_results, manual_values=manual_values, error=error_text, notice=notice)
+
+    @app.post("/dossier/review")
+    def dossier_review_post():
+        results, manual_values = load_current_dossier_state()
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        save_current_dossier_state(results, manual_values)
+        return render_dossier_page(results=results, manual_values=manual_values, notice="Revisione salvata.")
+
+    @app.post("/dossier/reset")
+    def dossier_reset_post():
+        clear_current_dossier_state()
+        return render_dossier_page(notice="Nuova analisi avviata: dossier azzerato.")
 
     @app.get("/moduli")
     def moduli_home():
@@ -4783,21 +4998,10 @@ def run_web(
             spec = get_pdf_template_spec(slug)
             raw_values = request.form.to_dict(flat=True)
             if any(name in raw_values for name in _CASE_FIELD_DEF_MAP):
-                manual_fields = []
-                for field_def in CASE_FIELD_DEFS:
-                    value = sanitize_pdf_text(raw_values.get(field_def.name, ""))
-                    if not value:
-                        continue
-                    manual_fields.append(
-                        AggregatedCaseField(
-                            name=field_def.name,
-                            label=field_def.label,
-                            value=value,
-                            source_filename="Revisione utente",
-                            source_document_label="Dato confermato/modificato",
-                        )
-                    )
-                case_values = aggregated_fields_to_dict(infer_aggregated_fields(manual_fields))
+                results, manual_values = load_current_dossier_state()
+                manual_values.update(extract_manual_case_values(raw_values))
+                save_current_dossier_state(results, manual_values)
+                case_values = aggregated_fields_to_dict(merge_reviewed_case_fields(results, manual_values))
                 values = build_prefill_for_template(spec.key, case_values)
             else:
                 values = raw_values
