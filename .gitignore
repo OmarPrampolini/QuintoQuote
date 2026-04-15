@@ -3,6 +3,7 @@ __pycache__/
 
 .venv/
 venv/
+*.egg-info/
 
 .pytest_cache/
 .mypy_cache/
@@ -10,5 +11,6 @@ venv/
 config.json
 output_preventivi/
 assets/
+.quintoquote_tmp/
 
 *.log

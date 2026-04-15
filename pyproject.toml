@@ -12,8 +12,11 @@ license = { file = "LICENSE" }
 authors = [{ name = "QuintoQuote contributors" }]
 keywords = ["pdf", "finance", "reportlab", "flask", "cessione-del-quinto"]
 dependencies = [
-  "reportlab>=4.0",
-  "flask>=3.0",
+  "reportlab>=4.4.10",
+  "flask>=3.1.3",
+  "werkzeug>=3.1.6",
+  "pymupdf>=1.27.2",
+  "pillow>=12.2.0",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",

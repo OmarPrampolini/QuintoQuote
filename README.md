@@ -32,12 +32,12 @@
 
 ## Provalo in 30 secondi
 
-```bash
-pip install -e .
-QuintoQuote start
+```powershell
+irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps1 | iex
 ```
 
-Si apre il browser. Compili il form. Scarichi il PDF. Fine.
+Lo script crea `.venv`, installa QuintoQuote, abilita il launcher locale e avvia la web UI.
+Compili il form. Scarichi il PDF. Fine.
 
 ---
 
@@ -93,8 +93,39 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 | Logo agente | Opzionale, visibile nell'header del PDF |
 | Multi-scenario | Piu combinazioni rata/durata nello stesso documento |
 | Storico PDF | Tutti i preventivi generati, scaricabili dalla UI |
+| Modulistica MEF | Compilatore guidato per Allegato E e Allegato C Flussi Finanziari |
+| Dossier NO AI | Upload PDF, JPG, PNG, OCR locale e prefill moduli |
 | CLI guidata | Prompt interattivo da terminale |
 | CLI batch | `--non-interactive` per script e automazioni |
+
+---
+
+## Compilatore Allegati MEF
+
+Nella web UI trovi anche la sezione **Moduli**.
+
+- **Allegato E Delega MEF**: 43 campi mappati sulle prime 2 pagine del template originale.
+- **Allegato C Flussi Finanziari MEF**: 20 campi mappati sul template Creditonet.
+- **Output diretto in PDF**: compili i campi nella UI e scarichi il modulo gia popolato, mantenendo impaginazione e caselle originali.
+
+I template PDF di partenza vengono letti dalla cartella `docs/`.
+
+---
+
+## Dossier Documenti (NO AI)
+
+Nella web UI trovi anche la sezione **Dossier**.
+
+- Accetta piu PDF testuali caricati insieme
+- Accetta anche screenshot e scansioni in JPG/PNG tramite OCR locale
+- Classifica i file con parole chiave, senza AI
+- Estrae i campi con regex e anchor text
+- Mostra i dati estratti in una schermata di revisione, modificabili prima del prefill
+- Aggrega i dati trovati e precompila Allegato E e Allegato C
+- Include parser dedicati per cedolino NoiPA/MEF e contratto di finanziamento/delega in PDF testuale
+- Usa Tesseract OCR in locale come fallback sui PDF scannerizzati e come parser principale per immagini
+
+Nota: per OCR serve `tesseract.exe` installato sul PC. Se non e in `PATH`, puoi indicarlo con la variabile d'ambiente `QUINTOQUOTE_TESSERACT_PATH`.
 
 ---
 
@@ -123,24 +154,44 @@ Tutti i PDF generati restano disponibili per il download.
 
 ## Installazione
 
+### One-liner GitHub
+
+```powershell
+irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps1 | iex
+```
+
+Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package e avvia QuintoQuote.
+
 ### Requisiti
 
 - Python 3.10+
 - `reportlab`
 - `flask`
+- `werkzeug`
+- `pymupdf`
+- `pillow`
+- `tesseract` opzionale ma consigliato per scansioni e screenshot
 
 ### Setup
 
 ```bash
-pip install -e .
+python -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
+.venv\Scripts\python -m pip install -e .
 ```
 
-Dopo l'installazione hai il comando `QuintoQuote` disponibile ovunque.
+Questo isola QuintoQuote dal Python globale e forza una baseline di dipendenze sicure.
 
-### Avvio
+Dopo l'installazione puoi avviare QuintoQuote con l'interprete della virtualenv:
 
 ```bash
-QuintoQuote start
+.venv\Scripts\python -m preventivo_generator_v2 start
+```
+
+Oppure direttamente con il launcher generato nella virtualenv:
+
+```powershell
+.venv\Scripts\quintoquote.exe start
 ```
 
 Apre la web UI e prova ad aprire il browser automaticamente.

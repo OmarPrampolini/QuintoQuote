@@ -19,13 +19,21 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
+import uuid
 import webbrowser
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+try:
+    import fitz
+except Exception:
+    fitz = None
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -1436,6 +1444,1376 @@ def build_extra_preventivi(base: Preventivo, scenario_lines: list[str]) -> list[
         out.append(p)
     return out
 
+
+# =========================
+#  PDF TEMPLATE COMPILER (MEF)
+# =========================
+
+@dataclass(frozen=True)
+class PdfFieldDef:
+    name: str
+    widget: str
+    label: str
+    placeholder: str = ""
+    help_text: str = ""
+    full_width: bool = False
+    font_size: float = 10.0
+    default: str = ""
+
+
+@dataclass(frozen=True)
+class PdfSectionDef:
+    title: str
+    icon: str
+    description: str
+    fields: tuple[PdfFieldDef, ...]
+
+
+@dataclass(frozen=True)
+class PdfTemplateSpec:
+    key: str
+    slug: str
+    label: str
+    description: str
+    summary: str
+    template_name: str
+    output_prefix: str
+    filename_field: str
+    button_label: str
+    sections: tuple[PdfSectionDef, ...]
+
+
+_PDF_TEMPLATE_DIR = Path(__file__).parent / "docs"
+_DYNAMIC_DEFAULT_TODAY = "__TODAY__"
+
+ALLEGATO_C_SPEC = PdfTemplateSpec(
+    key="allegato_c",
+    slug="allegato-c",
+    label="Allegato C Flussi Finanziari MEF",
+    description="Dichiarazione di finanziamento cessione per i flussi finanziari MEF / NoiPA.",
+    summary="20 campi mappati sul template originale Creditonet.",
+    template_name="Allegato C Creditonet (1).pdf",
+    output_prefix="AllegatoC",
+    filename_field="dipendente_nome_cognome",
+    button_label="Scarica Allegato C compilato",
+    sections=(
+        PdfSectionDef(
+            title="Sezione Istituto Mutuante",
+            icon="🏦",
+            description="Campi economici e dati dell'eventuale finanziamento da estinguere.",
+            fields=(
+                PdfFieldDef("importo_erogato", "Testo87", "Importo erogato", "Es. 30.000,00"),
+                PdfFieldDef("importo_globale_ceduto", "Testo88", "Importo globale ceduto", "Es. 42.000,00"),
+                PdfFieldDef("spese_complessive", "Testo89", "Spese complessive", "Es. 1.250,00"),
+                PdfFieldDef("interessi_complessivi", "Testo90", "Interessi complessivi", "Es. 10.750,00"),
+                PdfFieldDef("tan", "Testo91", "TAN", "Es. 4,500"),
+                PdfFieldDef("isc_taeg", "Testo92", "ISC / TAEG", "Es. 5,120"),
+                PdfFieldDef("numero_rate_estinguibili", "Testo93", "Estinguibile in n°", "Es. 120"),
+                PdfFieldDef("importo_rata_estinzione", "Testo94", "Rate mensili di euro", "Es. 350,00"),
+                PdfFieldDef(
+                    "garanzia_assicurativa",
+                    "Testo95",
+                    "Garanzia assicurativa",
+                    "Es. Polizza n. 12345 del 15/04/2026",
+                    full_width=True,
+                    font_size=9.0,
+                ),
+                PdfFieldDef("revoca_finanziamento_importo", "Testo2", "Revoca altro finanziamento: importo", "Es. 220,00"),
+                PdfFieldDef("revoca_finanziamento_scadenza", "Testo3", "Revoca altro finanziamento: scadenza", "Es. 31/12/2030"),
+                PdfFieldDef(
+                    "revoca_finanziamento_contratto",
+                    "Testo8",
+                    "Revoca altro finanziamento: contratto con",
+                    "Es. Banca XYZ - pratica 123456",
+                    full_width=True,
+                    font_size=9.0,
+                ),
+            ),
+        ),
+        PdfSectionDef(
+            title="Sezione Dipendente",
+            icon="👤",
+            description="Dati anagrafici e amministrativi del dipendente / istante.",
+            fields=(
+                PdfFieldDef(
+                    "dipendente_nome_cognome",
+                    "Testo96",
+                    "Cognome e Nome",
+                    "Es. Rossi Mario",
+                    full_width=True,
+                    font_size=9.5,
+                ),
+                PdfFieldDef("dipendente_nascita_luogo", "Testo97", "Nato/a a", "Es. Roma"),
+                PdfFieldDef("dipendente_nascita_provincia", "Testo98", "Prov.", "Es. RM", font_size=9.5),
+                PdfFieldDef("dipendente_nascita_data", "Testo99", "Il", "GG/MM/AAAA"),
+                PdfFieldDef(
+                    "dipendente_codice_fiscale",
+                    "Testo100",
+                    "Codice Fiscale",
+                    "Es. RSSMRA80A01H501Z",
+                    full_width=True,
+                    font_size=9.5,
+                ),
+                PdfFieldDef(
+                    "dipendente_in_servizio_presso",
+                    "Testo4",
+                    "In servizio presso",
+                    "Es. Ministero dell'Economia e delle Finanze",
+                    full_width=True,
+                    font_size=9.0,
+                ),
+                PdfFieldDef(
+                    "dipendente_ente_appartenenza",
+                    "Testo5",
+                    "Ente di appartenenza",
+                    "Es. Ragioneria Territoriale dello Stato di Roma",
+                    full_width=True,
+                    font_size=9.0,
+                ),
+                PdfFieldDef("data_modulo", "Testo6", "Data", "GG/MM/AAAA", default=_DYNAMIC_DEFAULT_TODAY),
+            ),
+        ),
+    ),
+)
+
+ALLEGATO_E_SPEC = PdfTemplateSpec(
+    key="allegato_e",
+    slug="allegato-e",
+    label="Allegato E Delega MEF",
+    description="Istanza di delegazione di pagamento con parte riservata all'istituto delegatario.",
+    summary="43 campi mappati sui widget delle prime 2 pagine del template originale.",
+    template_name="AllegatoE determina positiva ATC (1) (3).pdf",
+    output_prefix="AllegatoE",
+    filename_field="istante_nome_completo",
+    button_label="Scarica Allegato E compilato",
+    sections=(
+        PdfSectionDef(
+            title="Intestazione",
+            icon="📍",
+            description="Le tre righe in alto a destra del modulo.",
+            fields=(
+                PdfFieldDef("destinatario_riga_1", "Testo1", "Riga 1 destinatario", "Es. Direzione dei Servizi del Tesoro", full_width=True, font_size=9.0),
+                PdfFieldDef("destinatario_riga_2", "Testo2", "Riga 2 destinatario", "Es. Ufficio Stipendi Centrali", full_width=True, font_size=9.0),
+                PdfFieldDef("destinatario_riga_3", "Testo3", "Riga 3 destinatario", "Es. Roma", full_width=True, font_size=9.0),
+            ),
+        ),
+        PdfSectionDef(
+            title="Anagrafica Istante",
+            icon="👤",
+            description="Dati personali riportati nella prima pagina.",
+            fields=(
+                PdfFieldDef("istante_nome_completo", "Testo4", "Il/La sottoscritto/a", "Es. Rossi Mario", full_width=True, font_size=9.5),
+                PdfFieldDef("nascita_comune", "Testo5", "Nato/a a", "Es. Roma", full_width=True),
+                PdfFieldDef("nascita_provincia", "Testo6", "Provincia di nascita", "Es. Roma"),
+                PdfFieldDef("nascita_sigla_provincia", "Testo7", "Sigla prov. nascita", "Es. RM", font_size=9.5),
+                PdfFieldDef("nascita_data", "Testo8", "Data di nascita", "GG/MM/AAAA"),
+                PdfFieldDef("codice_fiscale", "Testo9", "Codice fiscale", "Es. RSSMRA80A01H501Z"),
+                PdfFieldDef("partita_stipendiale", "Testo10", "Partita stipendiale n.", "Es. 1234567"),
+                PdfFieldDef("residenza_comune", "Testo11", "Residente a", "Es. Roma", full_width=True),
+                PdfFieldDef("residenza_provincia", "Testo12", "Provincia di residenza", "Es. Roma"),
+                PdfFieldDef("residenza_sigla_provincia", "Testo13", "Sigla prov. residenza", "Es. RM", font_size=9.5),
+                PdfFieldDef("residenza_cap", "Testo14", "CAP", "Es. 00100"),
+                PdfFieldDef("residenza_via", "Testo15", "Via/Piazza", "Es. Via Nazionale", full_width=True),
+                PdfFieldDef("residenza_numero", "Testo16", "N.", "Es. 10"),
+                PdfFieldDef("telefono", "Testo17", "Telefono", "Es. 06 1234567"),
+                PdfFieldDef("fax", "Testo18", "Fax", "Opzionale"),
+                PdfFieldDef("email_local_part", "Testo19", "Email - parte prima della @", "Es. mario.rossi"),
+                PdfFieldDef("email_domain", "Testo20", "Email - dominio", "Es. pec.it"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Richiesta di Delega",
+            icon="💸",
+            description="Campi nella parte dispositiva della prima pagina.",
+            fields=(
+                PdfFieldDef(
+                    "istituto_delegatario",
+                    "Testo21",
+                    "Ha chiesto un finanziamento a",
+                    "Es. Banca XYZ S.p.A.",
+                    full_width=True,
+                    font_size=9.0,
+                ),
+                PdfFieldDef("importo_trattenuta_mensile", "Testo22", "Importo di euro da trattenere", "Es. 350,00"),
+                PdfFieldDef(
+                    "iban_istituto_delegatario",
+                    "Testo23",
+                    "IBAN / coordinate conto istituto delegatario",
+                    "Es. IT60X0542811101000000123456",
+                    full_width=True,
+                    font_size=8.5,
+                ),
+            ),
+        ),
+        PdfSectionDef(
+            title="Parte Riservata all'Istituto Delegatario",
+            icon="🏦",
+            description="Campi economici presenti nella seconda pagina del modulo.",
+            fields=(
+                PdfFieldDef("importo_finanziamento_cifre", "Testo24", "Importo finanziamento (in cifre)", "Es. 30.000,00"),
+                PdfFieldDef("importo_finanziamento_lettere", "Testo25", "Importo finanziamento (in lettere)", "Es. trentamila/00", full_width=True, font_size=8.8),
+                PdfFieldDef("importo_globale_ceduto_cifre", "Testo26", "Importo globale ceduto (in cifre)", "Es. 42.000,00"),
+                PdfFieldDef("importo_globale_ceduto_lettere", "Testo27", "Importo globale ceduto (in lettere)", "Es. quarantaduemila/00", full_width=True, font_size=8.8),
+                PdfFieldDef("spese_complessive_cifre", "Testo28", "Spese complessive euro", "Es. 1.250,00"),
+                PdfFieldDef("interessi_complessivi_cifre", "Testo29", "Interessi complessivi euro", "Es. 10.750,00"),
+                PdfFieldDef("tan", "Testo30", "TAN", "Es. 4,500"),
+                PdfFieldDef("taeg", "Testo31", "TAEG", "Es. 5,120"),
+                PdfFieldDef("teg", "Testo32", "TEG", "Es. 4,980"),
+                PdfFieldDef("numero_rate_da_estinguere", "Testo33", "Finanziamento da estinguere in n.", "Es. 120"),
+                PdfFieldDef("importo_rata_estinzione", "Testo34", "Rate mensili di euro", "Es. 350,00"),
+                PdfFieldDef("garanzia_prestito", "Testo35", "Garanzia del prestito", "Es. Polizza n. 12345 del 15/04/2026", full_width=True, font_size=8.8),
+                PdfFieldDef(
+                    "estinzione_altro_finanziamento_istituto",
+                    "Testo36",
+                    "Altro finanziamento in corso, contratto con",
+                    "Es. Banca XYZ S.p.A.",
+                    full_width=True,
+                    font_size=8.8,
+                ),
+                PdfFieldDef("estinzione_altro_finanziamento_rata", "Testo37", "Per euro mensili", "Es. 220,00"),
+                PdfFieldDef("estinzione_altro_finanziamento_scadenza", "Testo38", "Scadenza", "Es. 31/12/2030"),
+                PdfFieldDef("luogo_timbro_istituto", "Testo39", "Luogo", "Es. Roma"),
+                PdfFieldDef("data_timbro_istituto", "Testo40", "Data", "GG/MM/AAAA", default=_DYNAMIC_DEFAULT_TODAY),
+            ),
+        ),
+        PdfSectionDef(
+            title="Autentica di Firma",
+            icon="🖊️",
+            description="Parte bassa della seconda pagina, da compilare se necessario.",
+            fields=(
+                PdfFieldDef(
+                    "documento_identificazione",
+                    "Testo41",
+                    "Identificata a mezzo",
+                    "Es. carta d'identità n. AA123456",
+                    full_width=True,
+                    font_size=8.8,
+                ),
+                PdfFieldDef("luogo_autentica", "Testo42", "Luogo", "Es. Roma"),
+                PdfFieldDef("data_autentica", "Testo43", "Data", "GG/MM/AAAA", default=_DYNAMIC_DEFAULT_TODAY),
+            ),
+        ),
+    ),
+)
+
+_PDF_TEMPLATE_SPECS = {
+    ALLEGATO_C_SPEC.key: ALLEGATO_C_SPEC,
+    ALLEGATO_E_SPEC.key: ALLEGATO_E_SPEC,
+    ALLEGATO_C_SPEC.slug: ALLEGATO_C_SPEC,
+    ALLEGATO_E_SPEC.slug: ALLEGATO_E_SPEC,
+}
+
+
+def get_pdf_template_spec(key_or_slug: str) -> PdfTemplateSpec:
+    spec = _PDF_TEMPLATE_SPECS.get((key_or_slug or "").strip().lower())
+    if spec is None:
+        raise KeyError(f"Template PDF non supportato: {key_or_slug}")
+    return spec
+
+
+def iter_pdf_fields(spec: PdfTemplateSpec):
+    for section in spec.sections:
+        for field in section.fields:
+            yield field
+
+
+def sanitize_pdf_text(raw: object) -> str:
+    text = str(raw or "").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s{2,}", " ", text)
+    return text
+
+
+def default_pdf_form_values(spec: PdfTemplateSpec) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for field in iter_pdf_fields(spec):
+        if field.default:
+            values[field.name] = (
+                datetime.now().strftime("%d/%m/%Y")
+                if field.default == _DYNAMIC_DEFAULT_TODAY
+                else field.default
+            )
+    return values
+
+
+def sanitize_pdf_form_payload(spec: PdfTemplateSpec, raw: dict[str, object]) -> dict[str, str]:
+    values = default_pdf_form_values(spec)
+    has_any_value = False
+    for field in iter_pdf_fields(spec):
+        value = sanitize_pdf_text(raw.get(field.name, ""))
+        if value:
+            values[field.name] = value
+            has_any_value = True
+        else:
+            values.setdefault(field.name, "")
+    if not has_any_value:
+        raise ValueError("Compila almeno un campo prima di generare il PDF.")
+    return values
+
+
+def require_pymupdf():
+    if fitz is None:
+        raise RuntimeError("PyMuPDF non installato. Esegui: pip install pymupdf")
+    return fitz
+
+
+def build_pdf_template_output_path(spec: PdfTemplateSpec, values: dict[str, str], out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    identifier = sanitize_filename(values.get(spec.filename_field, "")) or spec.output_prefix
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    return out_dir / f"{spec.output_prefix}_{identifier}_{stamp}.pdf"
+
+
+def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_path: Path) -> Path:
+    fitz_mod = require_pymupdf()
+    template_path = _PDF_TEMPLATE_DIR / spec.template_name
+    if not template_path.exists():
+        raise FileNotFoundError(f"Template non trovato: {template_path.name}")
+
+    field_map = {field.widget: field for field in iter_pdf_fields(spec)}
+    doc = fitz_mod.open(template_path)
+    doc.need_appearances(True)
+    seen_widgets: set[str] = set()
+    try:
+        for page in doc:
+            for widget in page.widgets() or []:
+                field = field_map.get(widget.field_name)
+                if field is None:
+                    continue
+                widget.field_value = sanitize_pdf_text(values.get(field.name, ""))
+                if hasattr(widget, "text_font"):
+                    widget.text_font = "Helv"
+                if hasattr(widget, "text_fontsize"):
+                    widget.text_fontsize = field.font_size
+                widget.update()
+                seen_widgets.add(widget.field_name)
+
+        missing_widgets = sorted(set(field_map) - seen_widgets)
+        if missing_widgets:
+            raise RuntimeError(
+                "Nel template PDF mancano alcuni widget attesi: " + ", ".join(missing_widgets)
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(output_path)
+    finally:
+        doc.close()
+    return output_path
+
+
+def generate_pdf_template(spec_key: str, raw_values: dict[str, object], out_dir: Path) -> tuple[Path, dict[str, str], PdfTemplateSpec]:
+    spec = get_pdf_template_spec(spec_key)
+    values = sanitize_pdf_form_payload(spec, raw_values)
+    output_path = build_pdf_template_output_path(spec, values, out_dir)
+    render_pdf_template(spec, values, output_path)
+    return output_path, values, spec
+
+
+# =========================
+#  DOSSIER ENGINE (NO AI)
+# =========================
+
+@dataclass(frozen=True)
+class CaseFieldDef:
+    name: str
+    label: str
+    category: str
+    placeholder: str = ""
+
+
+@dataclass(frozen=True)
+class DocumentTypeDef:
+    key: str
+    label: str
+    keywords: tuple[str, ...]
+
+
+@dataclass
+class DocumentExtractionResult:
+    filename: str
+    document_key: str
+    document_label: str
+    page_count: int
+    text_length: int
+    keyword_hits: int
+    extracted_fields: dict[str, str]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class AggregatedCaseField:
+    name: str
+    label: str
+    value: str
+    source_filename: str
+    source_document_label: str
+
+
+_MONEY_CAPTURE = r"((?:EUR\s*)?(?:€\s*)?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2,3})|(?:EUR\s*)?(?:€\s*)?\d+(?:,\d{2,3})?)"
+_DATE_CAPTURE = r"([0-3]?\d[\/\.-][01]?\d[\/\.-](?:\d{4}|\d{2}))"
+_DOSSIER_PDF_EXTENSIONS = {".pdf"}
+_DOSSIER_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+_DOSSIER_SUPPORTED_EXTENSIONS = _DOSSIER_PDF_EXTENSIONS | _DOSSIER_IMAGE_EXTENSIONS
+_OCR_TRIGGER_TEXT_LENGTH = 80
+_LOW_TEXT_WARNING_LENGTH = 50
+_TESSERACT_CANDIDATE_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    str(Path.home() / "AppData" / "Local" / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
+)
+_LOCAL_RUNTIME_TEMP_DIR = Path(__file__).resolve().parent / ".quintoquote_tmp"
+
+CASE_FIELD_DEFS = (
+    CaseFieldDef("full_name", "Nome e cognome", "anagrafica", "Es. Mario Rossi"),
+    CaseFieldDef("birth_place", "Luogo di nascita", "anagrafica", "Es. Roma"),
+    CaseFieldDef("birth_date", "Data di nascita", "anagrafica", "GG/MM/AAAA"),
+    CaseFieldDef("birth_province_name", "Provincia di nascita", "anagrafica", "Es. Roma"),
+    CaseFieldDef("birth_province_code", "Sigla provincia di nascita", "anagrafica", "Es. RM"),
+    CaseFieldDef("tax_code", "Codice fiscale", "anagrafica", "Es. RSSMRA80A01H501Z"),
+    CaseFieldDef("payroll_number", "Partita stipendiale", "lavoro", "Es. 12345678"),
+    CaseFieldDef("residence_city", "Comune di residenza", "residenza", "Es. Roma"),
+    CaseFieldDef("residence_province_name", "Provincia di residenza", "residenza", "Es. Roma"),
+    CaseFieldDef("residence_province_code", "Sigla provincia di residenza", "residenza", "Es. RM"),
+    CaseFieldDef("residence_cap", "CAP", "residenza", "Es. 00100"),
+    CaseFieldDef("residence_street", "Via / Piazza", "residenza", "Es. Via Roma"),
+    CaseFieldDef("residence_number", "Numero civico", "residenza", "Es. 10"),
+    CaseFieldDef("phone", "Telefono", "contatti", "Es. 061234567"),
+    CaseFieldDef("fax", "Fax", "contatti", "Opzionale"),
+    CaseFieldDef("email", "Email", "contatti", "Es. nome@pec.it"),
+    CaseFieldDef("service_office", "In servizio presso", "lavoro", "Es. I.C. Faenza San Rocco"),
+    CaseFieldDef("employer_entity", "Ente di appartenenza", "lavoro", "Es. Ministero dell'Istruzione"),
+    CaseFieldDef("lender_name", "Istituto / finanziaria", "finanza", "Es. Bibanca S.p.A."),
+    CaseFieldDef("iban", "IBAN istituto delegatario", "bancario", "Es. IT60X0542811101000000123456"),
+    CaseFieldDef("borrower_iban", "IBAN personale / accredito stipendio", "bancario", "Es. IT60X0542811101000000123456"),
+    CaseFieldDef("loan_amount", "Importo finanziamento", "finanza", "Es. 30.000,00"),
+    CaseFieldDef("net_disbursed", "Importo erogato", "finanza", "Es. 30.000,00"),
+    CaseFieldDef("total_ceded", "Importo globale ceduto / montante", "finanza", "Es. 42.000,00"),
+    CaseFieldDef("fees_total", "Spese complessive", "finanza", "Es. 0,00"),
+    CaseFieldDef("interest_total", "Interessi complessivi", "finanza", "Es. 10.750,00"),
+    CaseFieldDef("monthly_installment", "Rata / trattenuta mensile", "finanza", "Es. 350,00"),
+    CaseFieldDef("salary_fifth", "Quinto cedibile", "finanza", "Es. 339,51"),
+    CaseFieldDef("installment_count", "Numero rate / durata mesi", "finanza", "48, 60, 72, 84, 96, 108, 120"),
+    CaseFieldDef("tan", "TAN", "finanza", "Es. 4,72"),
+    CaseFieldDef("taeg", "TAEG", "finanza", "Es. 4,83"),
+    CaseFieldDef("teg", "TEG", "finanza", "Es. 4,80"),
+    CaseFieldDef("insurance", "Garanzia / polizza", "finanza", "Es. Polizza n. ..."),
+    CaseFieldDef("other_financing_lender", "Altro finanziamento: istituto", "finanza", "Es. Banca XYZ"),
+    CaseFieldDef("other_financing_installment", "Altro finanziamento: rata", "finanza", "Es. 220,00"),
+    CaseFieldDef("other_financing_expiry", "Altro finanziamento: scadenza", "finanza", "GG/MM/AAAA"),
+)
+
+_CASE_FIELD_DEF_MAP = {field.name: field for field in CASE_FIELD_DEFS}
+_CASE_CATEGORY_LABELS = {
+    "anagrafica": "Anagrafica",
+    "residenza": "Residenza",
+    "contatti": "Contatti",
+    "lavoro": "Lavoro",
+    "finanza": "Finanza",
+    "bancario": "Coordinate",
+}
+
+DOCUMENT_TYPE_DEFS = (
+    DocumentTypeDef("cedolino_noipa", "Cedolino NoiPA / MEF", ("noipa", "cedolino", "id cedolino", "anagrafica del dipendente", "ufficio servizio")),
+    DocumentTypeDef("contratto_finanziamento", "Contratto finanziamento", ("informazioni europee di base sul credito ai consumatori", "prestito con delegazione di pagamento", "numero rate mensili da pagare", "importo rata mensile")),
+    DocumentTypeDef("documento_finanziario", "Documento finanziario", ("tan", "taeg", "importo erogato", "importo globale ceduto", "montante", "totale da rimborsare", "durata", "rata")),
+    DocumentTypeDef("documento_anagrafico", "Documento anagrafico", ("codice fiscale", "data di nascita", "nato", "residente", "cognome")),
+    DocumentTypeDef("coordinate_bancarie", "Coordinate bancarie", ("iban", "conto corrente", "istituto delegatario")),
+    DocumentTypeDef("modulo_mef", "Modulo MEF", ("allegato e", "allegato c", "partita stipendiale")),
+)
+
+FIELD_PATTERNS: dict[str, tuple[str, ...]] = {
+    "full_name": (
+        r"(?im)(?:cognome\s+e\s+nome|nome\s+e\s+cognome|nominativo)\s*[:\-]?\s*([^\n]{3,100})",
+        r"(?im)il\/la\s+sottoscritto\/a\s*([^\n]{3,100})",
+    ),
+    "birth_place": (
+        r"(?im)(?:luogo|comune)\s+di\s+nascita\s*[:\-]?\s*([^\n]{2,80})",
+        r"(?is)nato\/?a?\s+a\s+([A-ZÀ-ÿ' ]{2,80}?)(?:\s+(?:provincia|prov\.|il)\b)",
+    ),
+    "birth_date": (
+        rf"(?im)data\s+di\s+nascita\s*[:\-]?\s*{_DATE_CAPTURE}",
+        rf"(?is)nato\/?a?.{{0,120}}?\bil\s+{_DATE_CAPTURE}",
+    ),
+    "birth_province_name": (
+        r"(?im)provincia\s+di\s+nascita\s*[:\-]?\s*([^\n]{2,80})",
+        r"(?is)nato\/?a?.{0,120}?provincia\s+di\s+([A-ZÀ-ÿ' ]{2,80}?)(?:\s+\(|\s+\bil\b)",
+    ),
+    "birth_province_code": (
+        r"(?im)prov(?:incia)?\.?\s+di\s+nascita\s*[:\-]?\s*\(?([A-Z]{2})\)?",
+        r"(?is)nato\/?a?.{0,120}?\(([A-Z]{2})\)\s+\bil\b",
+    ),
+    "tax_code": (
+        r"(?im)(?:codice\s+fiscale|cod\.?\s*fiscale|cf)\s*[:\-]?\s*([A-Z0-9]{16})",
+    ),
+    "payroll_number": (
+        r"(?im)partita\s+stipendiale(?:\s*n\.?)?\s*[:\-]?\s*([A-Z0-9\/\-]{4,20})",
+    ),
+    "residence_city": (
+        r"(?im)(?:residente\s+a|comune\s+di\s+residenza)\s*[:\-]?\s*([^\n,]{2,80})",
+    ),
+    "residence_province_name": (
+        r"(?im)provincia\s+di\s+residenza\s*[:\-]?\s*([^\n]{2,80})",
+        r"(?is)residente\s+a.{0,120}?provincia\s+di\s+([A-ZÀ-ÿ' ]{2,80}?)(?:\s+\(|\s+cap\b)",
+    ),
+    "residence_province_code": (
+        r"(?im)prov(?:incia)?\.?\s+di\s+residenza\s*[:\-]?\s*\(?([A-Z]{2})\)?",
+        r"(?is)residente\s+a.{0,120}?\(([A-Z]{2})\)\s+cap\b",
+    ),
+    "residence_cap": (
+        r"(?im)\bcap\b\s*[:\-]?\s*(\d{5})",
+    ),
+    "residence_street": (
+        r"(?im)(?:via\/piazza|indirizzo(?:\s+di\s+residenza)?|residente\s+in\s+via)\s*[:\-]?\s*([^\n]{3,120})",
+    ),
+    "residence_number": (
+        r"(?im)\bn\.?\s*[:\-]?\s*([A-Z0-9\/\-]{1,10})",
+    ),
+    "phone": (
+        r"(?im)(?:telefono|tel\.?)\s*[:\-]?\s*(\+?[0-9][0-9\/\-\s]{5,24})",
+    ),
+    "fax": (
+        r"(?im)\bfax\b\s*[:\-]?\s*(\+?[0-9][0-9\/\-\s]{5,24})",
+    ),
+    "email": (
+        r"([A-Za-z0-9._%+\-]+)\s*@\s*([A-Za-z0-9.\-]+\.[A-Za-z]{2,})",
+    ),
+    "service_office": (
+        r"(?im)(?:in\s+servizio\s+presso|ufficio\s+di\s+servizio|servizio\s+presso)\s*[:\-]?\s*([^\n]{3,120})",
+    ),
+    "employer_entity": (
+        r"(?im)(?:ente\s+di\s+appartenenza|amministrazione\s+di\s+appartenenza)\s*[:\-]?\s*([^\n]{3,120})",
+    ),
+    "lender_name": (
+        r"(?im)(?:istituto\s+delegatario|istituto\s+mutuante|societ[aà]\s+finanziaria)\s*[:\-]?\s*([^\n]{3,120})",
+        r"(?im)ha\s+chiesto\s+un\s+finanziamento\s+a\s*([^\n]{3,120})",
+    ),
+    "iban": (
+        r"\b(IT\d{2}(?:\s?[A-Z0-9]){23})\b",
+    ),
+    "loan_amount": (
+        rf"(?im)importo\s+finanziamento(?:\s*\(in\s+cifre\))?\s*(?:euro)?\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)(?:importo\s+finanziato|capitale\s+finanziato)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "net_disbursed": (
+        rf"(?im)(?:importo\s+erogato|netto\s+erogato)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)capitale\s+netto\s+erogato\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "total_ceded": (
+        rf"(?im)importo\s+globale\s+ceduto\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)montante(?:\s+totale)?\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)totale\s+da\s+rimborsare\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)importo\s+totale\s+dovuto\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "fees_total": (
+        rf"(?im)spese\s+complessive(?:\s+euro)?\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)costi(?!\s+del\s+finanziamento)\s*[:=\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "interest_total": (
+        rf"(?im)interessi\s+complessivi(?:\s+euro)?\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "monthly_installment": (
+        rf"(?im)(?:rata\s+mensile|rate?\s+mensili\s+di(?:\s+euro)?|importo\s+di\s+euro\s+da\s+trattenere)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        rf"(?im)\brata\b\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "installment_count": (
+        r"(?im)(?:n[°o]\s*rate|numero\s+rate|estinguibile\s+in\s+n[°o])\s*[:\-]?\s*(\d{1,3})",
+        r"(?im)durata(?:\s+contrattuale)?\s*[:\-]?\s*(\d{1,3})(?:\s*mesi)?",
+        r"(?im)per\s+(\d{2,3})\s*mesi",
+    ),
+    "tan": (
+        r"(?im)\bTAN\b\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+    ),
+    "taeg": (
+        r"(?im)\bTAEG\b\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+        r"(?im)\bISC\/TAEG\b\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+    ),
+    "teg": (
+        r"(?im)\bTEG\b\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+    ),
+    "insurance": (
+        r"(?im)(?:garanzia\s+assicurativa|garanzia\s+del\s+prestito)\s*[:\-]?\s*([^\n]{3,120})",
+    ),
+    "other_financing_lender": (
+        r"(?im)(?:estinzione\s+dell[’']eventuale\s+altro\s+finanziamento\s+in\s+corso,\s+contratto\s+con|revoca\s+altro\s+finanziamento.*?contratto\s+con)\s*([^\n]{3,120})",
+    ),
+    "other_financing_installment": (
+        rf"(?im)(?:per\s+euro\s+mensili|in\s+corso\s+di\s+€)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+    ),
+    "other_financing_expiry": (
+        rf"(?im)(?:avente\s+scadenza|scadenza)\s*[:\-]?\s*{_DATE_CAPTURE}",
+    ),
+}
+
+_DOC_CATEGORY_PRIORITY = {
+    "documento_anagrafico": {"anagrafica": 95, "residenza": 92, "contatti": 70, "lavoro": 40, "finanza": 20, "bancario": 10},
+    "cedolino_noipa": {"anagrafica": 72, "residenza": 35, "contatti": 25, "lavoro": 96, "finanza": 45, "bancario": 10},
+    "contratto_finanziamento": {"anagrafica": 20, "residenza": 10, "contatti": 10, "lavoro": 15, "finanza": 98, "bancario": 25},
+    "documento_finanziario": {"anagrafica": 35, "residenza": 15, "contatti": 20, "lavoro": 25, "finanza": 96, "bancario": 85},
+    "coordinate_bancarie": {"anagrafica": 10, "residenza": 10, "contatti": 25, "lavoro": 10, "finanza": 45, "bancario": 98},
+    "modulo_mef": {"anagrafica": 85, "residenza": 82, "contatti": 65, "lavoro": 88, "finanza": 88, "bancario": 90},
+    "documento_generico": {"anagrafica": 45, "residenza": 45, "contatti": 45, "lavoro": 45, "finanza": 45, "bancario": 45},
+}
+
+_REJECT_VALUE_PATTERNS = (
+    re.compile(r"^[_\-\s./()]+$"),
+    re.compile(r"^(?:nome|cognome|prov(?:incia)?|cap|fax|telefono|email|euro|data|firma)$", re.IGNORECASE),
+    re.compile(r"^(?:ente di appartenenza|in servizio presso|nato\/?a a|importo erogato:? ?€?)$", re.IGNORECASE),
+)
+
+
+def _normalize_search_text(text: str) -> str:
+    text = (text or "").replace("\u00a0", " ").replace("\x00", " ")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def is_supported_dossier_file(filename: str) -> bool:
+    return Path(filename or "").suffix.lower() in _DOSSIER_SUPPORTED_EXTENSIONS
+
+
+def _is_pdf_dossier_file(filename: str) -> bool:
+    return Path(filename or "").suffix.lower() in _DOSSIER_PDF_EXTENSIONS
+
+
+def _is_image_dossier_file(filename: str) -> bool:
+    return Path(filename or "").suffix.lower() in _DOSSIER_IMAGE_EXTENSIONS
+
+
+def find_tesseract_executable() -> str:
+    configured = sanitize_pdf_text(os.getenv("QUINTOQUOTE_TESSERACT_PATH") or os.getenv("TESSERACT_CMD"))
+    candidates = [configured] if configured else []
+    resolved = shutil.which("tesseract")
+    if resolved:
+        candidates.append(resolved)
+    candidates.extend(_TESSERACT_CANDIDATE_PATHS)
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(candidate)
+    return ""
+
+
+def get_ocr_status_message() -> str:
+    tesseract_cmd = find_tesseract_executable()
+    if tesseract_cmd:
+        return "OCR locale attivo: PDF scannerizzati e immagini JPG/PNG vengono letti con Tesseract, senza AI."
+    return (
+        "OCR pronto ma non attivo: per leggere scansioni e screenshot installa Tesseract OCR "
+        "oppure imposta QUINTOQUOTE_TESSERACT_PATH."
+    )
+
+
+def _get_runtime_temp_dir() -> Path:
+    _LOCAL_RUNTIME_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    return _LOCAL_RUNTIME_TEMP_DIR
+
+
+def _new_runtime_temp_path(suffix: str) -> Path:
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return _get_runtime_temp_dir() / f"qq_{uuid.uuid4().hex}{suffix}"
+
+
+def _search_first_group(pattern: str, text: str, flags: int = re.IGNORECASE | re.MULTILINE | re.DOTALL) -> str:
+    match = re.search(pattern, text, flags=flags)
+    if not match:
+        return ""
+    return sanitize_pdf_text(match.group(match.lastindex or 1))
+
+
+def _normalize_person_name(*parts: str) -> str:
+    cleaned_parts = [sanitize_pdf_text(part) for part in parts if sanitize_pdf_text(part)]
+    if not cleaned_parts:
+        return ""
+    normalized: list[str] = []
+    for part in cleaned_parts:
+        normalized.append(" ".join(token.capitalize() for token in part.split()))
+    return " ".join(normalized)
+
+
+def _looks_like_cedolino_noipa(text: str) -> bool:
+    haystack = text.lower()
+    anchors = (
+        "id cedolino",
+        "anagrafica del dipendente",
+        "amm.ne appartenenza",
+        "ufficio servizio",
+        "coord. iban",
+    )
+    return sum(1 for anchor in anchors if anchor in haystack) >= 4
+
+
+def _extract_cedolino_noipa_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    surname = _search_first_group(r"(?im)^Cognome:\s*([^\n]+)$", text)
+    name = _search_first_group(r"(?im)^Nome:\s*([^\n]+)$", text)
+    full_name = _normalize_person_name(surname, name)
+    if full_name:
+        fields["full_name"] = full_name
+
+    mappings = {
+        "tax_code": r"(?im)^Codice fiscale:\s*([A-Z0-9]{16})$",
+        "birth_date": rf"(?im)^Data di nascita:\s*{_DATE_CAPTURE}$",
+        "residence_city": r"(?im)^Domicilio fiscale:\s*([^\n]+)$",
+        "payroll_number": r"(?im)^N(?:°|\s)?\s*partita:\s*([A-Z0-9]+)$",
+        "employer_entity": r"(?im)^Amm\.ne appartenenza:\s*([^\n]+)$",
+        "service_office": r"(?im)^Ufficio servizio:\s*([^\n]+)$",
+        "borrower_iban": r"(?im)^Coord\.\s*IBAN:\s*(?:\n\s*)?([A-Z0-9 ]{27,34})$",
+        "salary_fifth": rf"(?im)^Quinto cedibile:\s*(?:\n\s*)?{_MONEY_CAPTURE}$",
+    }
+    for field_name, pattern in mappings.items():
+        raw = _search_first_group(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = _clean_extracted_value(field_name, raw)
+        if cleaned and not _reject_extracted_value(field_name, cleaned):
+            fields[field_name] = cleaned
+    return fields
+
+
+def _looks_like_bibanca_contract(text: str) -> bool:
+    haystack = text.lower()
+    anchors = (
+        "informazioni europee di base sul credito ai consumatori",
+        "bibanca",
+        "prestito con delegazione di pagamento",
+        "numero rate mensili da pagare",
+        "importo rata mensile",
+    )
+    return sum(1 for anchor in anchors if anchor in haystack) >= 4
+
+
+def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, str]:
+    fitz_mod = require_pymupdf()
+    doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        page = doc[0]
+        page_text = _normalize_search_text(page.get_text("text"))
+        fields: dict[str, str] = {}
+
+        lender_name = _search_first_group(r"(?im)^Finanziatore\s*(?:\n\s*)?([^\n]+)$", page_text, flags=re.IGNORECASE | re.MULTILINE)
+        lender_name = _clean_extracted_value("lender_name", lender_name)
+        if lender_name and not _reject_extracted_value("lender_name", lender_name):
+            fields["lender_name"] = lender_name
+
+        blocks = page.get_text("blocks")
+        numeric_blocks: list[tuple[float, float, str]] = []
+        for block in blocks:
+            x0, y0, x1, y1, block_text, *_ = block
+            cleaned = sanitize_pdf_text(block_text)
+            cleaned = cleaned.replace(" ", "")
+            if x0 < 280:
+                continue
+            if not (430 <= y0 <= 760):
+                continue
+            if re.fullmatch(r"\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}", cleaned):
+                numeric_blocks.append((y0, x0, cleaned))
+
+        def nearest_value(min_y: float, max_y: float) -> str:
+            candidates = [(y0, x0, value) for y0, x0, value in numeric_blocks if min_y <= y0 <= max_y]
+            if not candidates:
+                return ""
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            return candidates[0][2]
+
+        sequential_map = {
+            "loan_amount": nearest_value(438, 452),
+            "net_disbursed": nearest_value(454, 474),
+            "installment_count": nearest_value(548, 562),
+            "monthly_installment": nearest_value(562, 580),
+            "total_ceded": nearest_value(638, 656),
+            "tan": nearest_value(694, 712),
+            "taeg": nearest_value(734, 752),
+        }
+        durata = nearest_value(526, 545)
+        if durata and not sequential_map["installment_count"]:
+            sequential_map["installment_count"] = durata
+
+        if sequential_map["loan_amount"] and not sequential_map["net_disbursed"]:
+            sequential_map["net_disbursed"] = sequential_map["loan_amount"]
+        if sequential_map["net_disbursed"] and not sequential_map["loan_amount"]:
+            sequential_map["loan_amount"] = sequential_map["net_disbursed"]
+
+        for field_name, raw in sequential_map.items():
+            cleaned = _clean_extracted_value(field_name, raw)
+            if cleaned and not _reject_extracted_value(field_name, cleaned):
+                fields[field_name] = cleaned
+        return fields
+    finally:
+        doc.close()
+
+
+def _extract_specialized_document_fields(filename: str, pdf_bytes: bytes, normalized_text: str) -> tuple[Optional[str], Optional[str], dict[str, str]]:
+    if _looks_like_cedolino_noipa(normalized_text):
+        return "cedolino_noipa", "Cedolino NoiPA / MEF", _extract_cedolino_noipa_fields(normalized_text)
+    if _looks_like_bibanca_contract(normalized_text):
+        return "contratto_finanziamento", "Contratto finanziamento", _extract_bibanca_contract_fields(pdf_bytes, normalized_text)
+    return None, None, {}
+
+
+def _clean_extracted_value(field_name: str, value: str) -> str:
+    value = (value or "").strip(" \t\r\n:;-")
+    value = re.sub(r"\s{2,}", " ", value)
+    if field_name == "email" and "@" not in value:
+        parts = re.split(r"\s*@\s*", value)
+        if len(parts) == 2:
+            value = f"{parts[0]}@{parts[1]}"
+    if field_name in {"tax_code", "iban", "borrower_iban", "birth_province_code", "residence_province_code"}:
+        value = value.replace(" ", "").upper()
+    if field_name in {"tan", "taeg", "teg"}:
+        value = value.replace(" ", "").replace("%", "").replace(".", ",")
+    if field_name in {
+        "loan_amount",
+        "net_disbursed",
+        "total_ceded",
+        "fees_total",
+        "interest_total",
+        "monthly_installment",
+        "salary_fifth",
+        "other_financing_installment",
+    }:
+        value = value.replace("EUR", "").replace("€", "").strip()
+    if field_name.endswith("_date") or field_name == "other_financing_expiry":
+        value = value.replace(".", "/").replace("-", "/")
+        parts = value.split("/")
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            gg, mm, aa = parts
+            if len(gg) == 1:
+                gg = gg.zfill(2)
+            if len(mm) == 1:
+                mm = mm.zfill(2)
+            if len(aa) == 2:
+                aa = ("20" if int(aa) < 40 else "19") + aa
+            value = f"{gg}/{mm}/{aa}"
+    return value.strip()
+
+
+def _reject_extracted_value(field_name: str, value: str) -> bool:
+    if not value:
+        return True
+    for pattern in _REJECT_VALUE_PATTERNS:
+        if pattern.fullmatch(value):
+            return True
+    if value.count("_") >= max(3, len(value) // 2):
+        return True
+    if field_name in {"tax_code"} and not re.fullmatch(r"[A-Z0-9]{16}", value):
+        return True
+    if field_name in {"birth_province_code", "residence_province_code"} and not re.fullmatch(r"[A-Z]{2}", value):
+        return True
+    if field_name == "residence_number" and not re.search(r"\d", value):
+        return True
+    if field_name in {"iban", "borrower_iban"} and not re.fullmatch(r"IT\d{2}[A-Z0-9]{23}", value):
+        return True
+    if field_name in {"loan_amount", "net_disbursed", "total_ceded", "fees_total", "interest_total", "monthly_installment", "salary_fifth", "other_financing_installment"} and not re.search(r"\d", value):
+        return True
+    if field_name in {"tan", "taeg", "teg"} and not re.fullmatch(r"\d+(?:,\d{1,3})?", value):
+        return True
+    if field_name in {"birth_date", "other_financing_expiry"} and not re.fullmatch(r"\d{2}/\d{2}/\d{4}", value):
+        return True
+    if field_name == "email" and "@" not in value:
+        return True
+    lower_value = value.lower()
+    if field_name == "full_name" and any(token in lower_value for token in ("nato", "cognome", "nome", "codice fiscale")):
+        return True
+    if field_name in {"lender_name", "employer_entity", "service_office", "insurance", "other_financing_lender"}:
+        noisy_tokens = ("sarà cura", "autorizza", "che ha compilato", "importo erogato", "revoca altro finanziamento")
+        if any(token in lower_value for token in noisy_tokens):
+            return True
+    return False
+
+
+def _extract_first_pattern_value(field_name: str, text: str) -> str:
+    for pattern in FIELD_PATTERNS.get(field_name, ()):
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        if not match:
+            continue
+        if field_name == "email" and match.lastindex == 2:
+            raw_value = f"{match.group(1)}@{match.group(2)}"
+        else:
+            raw_value = match.group(match.lastindex or 1)
+        cleaned = _clean_extracted_value(field_name, raw_value)
+        if not _reject_extracted_value(field_name, cleaned):
+            return cleaned
+    return ""
+
+
+def _run_tesseract_ocr(input_path: Path) -> str:
+    tesseract_cmd = find_tesseract_executable()
+    if not tesseract_cmd:
+        raise RuntimeError(
+            "OCR non disponibile: installa Tesseract OCR oppure imposta QUINTOQUOTE_TESSERACT_PATH."
+        )
+
+    attempts = (
+        ("ita+eng", "6"),
+        ("ita+eng", "11"),
+        ("ita", "6"),
+        ("eng", "6"),
+        ("", "6"),
+    )
+    errors: list[str] = []
+    for language, psm in attempts:
+        command = [tesseract_cmd, str(input_path), "stdout", "--psm", psm, "--oem", "1"]
+        if language:
+            command.extend(["-l", language])
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            check=False,
+        )
+        text = _normalize_search_text(completed.stdout)
+        if completed.returncode == 0 and text:
+            return text
+        error_text = sanitize_pdf_text(completed.stderr)
+        if error_text:
+            errors.append(error_text)
+
+    if errors:
+        raise RuntimeError(f"OCR non riuscito: {errors[-1]}")
+    raise RuntimeError("OCR non riuscito: nessun testo riconosciuto dal file.")
+
+
+def _safe_ocr_image_text_from_bytes(data: bytes, suffix: str) -> str:
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    input_path = _new_runtime_temp_path(suffix)
+    try:
+        input_path.write_bytes(data)
+        return _run_tesseract_ocr(input_path)
+    finally:
+        if input_path.exists():
+            input_path.unlink(missing_ok=True)
+
+
+def _safe_ocr_pdf_text_from_bytes(data: bytes) -> tuple[str, int]:
+    fitz_mod = require_pymupdf()
+    doc = fitz_mod.open(stream=data, filetype="pdf")
+    try:
+        texts: list[str] = []
+        temp_paths: list[Path] = []
+        try:
+            for index, page in enumerate(doc, start=1):
+                pixmap = page.get_pixmap(matrix=fitz_mod.Matrix(2.5, 2.5), alpha=False)
+                image_path = _new_runtime_temp_path(".png")
+                temp_paths.append(image_path)
+                pixmap.save(str(image_path))
+                page_text = _run_tesseract_ocr(image_path)
+                if page_text:
+                    texts.append(page_text)
+        finally:
+            for temp_path in temp_paths:
+                if temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
+        return "\n\n".join(texts), doc.page_count
+    finally:
+        doc.close()
+
+
+def _extract_text_from_supported_document(filename: str, data: bytes) -> tuple[str, int, list[str]]:
+    warnings: list[str] = []
+    if _is_pdf_dossier_file(filename):
+        text, page_count = _safe_pdf_text_from_bytes(data)
+        normalized = _normalize_search_text(text)
+        if len(normalized) < _OCR_TRIGGER_TEXT_LENGTH:
+            try:
+                ocr_text, _ = _safe_ocr_pdf_text_from_bytes(data)
+                ocr_normalized = _normalize_search_text(ocr_text)
+                if len(ocr_normalized) > len(normalized):
+                    text = "\n\n".join(part for part in (text, ocr_text) if _normalize_search_text(part))
+                    warnings.append("OCR locale applicato: PDF scannerizzato o poco testuale.")
+                    normalized = _normalize_search_text(text)
+            except RuntimeError as exc:
+                warnings.append(str(exc))
+        if len(normalized) < _LOW_TEXT_WARNING_LENGTH:
+            warnings.append("Testo disponibile molto limitato: controlla i dati estratti e integra i campi mancanti.")
+        return text, page_count, warnings
+
+    if _is_image_dossier_file(filename):
+        try:
+            text = _safe_ocr_image_text_from_bytes(data, Path(filename).suffix.lower())
+            warnings.append("OCR locale applicato: immagine analizzata con Tesseract.")
+            normalized = _normalize_search_text(text)
+            if len(normalized) < _LOW_TEXT_WARNING_LENGTH:
+                warnings.append("Testo OCR limitato: verifica i valori prima di usare il prefill.")
+            return text, 1, warnings
+        except RuntimeError as exc:
+            warnings.append(str(exc))
+            warnings.append("Immagine non analizzata: senza OCR installato lo screenshot non e leggibile.")
+            return "", 1, warnings
+
+    raise ValueError("Formato non supportato nel Dossier.")
+
+
+def _split_email(value: str) -> tuple[str, str]:
+    value = (value or "").strip()
+    if "@" not in value:
+        return "", ""
+    local, domain = value.split("@", 1)
+    return local.strip(), domain.strip()
+
+
+def _safe_pdf_text_from_bytes(data: bytes) -> tuple[str, int]:
+    fitz_mod = require_pymupdf()
+    doc = fitz_mod.open(stream=data, filetype="pdf")
+    try:
+        texts: list[str] = []
+        for page in doc:
+            texts.append(page.get_text("text"))
+        return "\n".join(texts), doc.page_count
+    finally:
+        doc.close()
+
+
+def _safe_pdf_widget_values_from_bytes(data: bytes) -> dict[str, str]:
+    fitz_mod = require_pymupdf()
+    doc = fitz_mod.open(stream=data, filetype="pdf")
+    try:
+        values: dict[str, str] = {}
+        for page in doc:
+            for widget in page.widgets() or []:
+                name = sanitize_pdf_text(getattr(widget, "field_name", ""))
+                value = sanitize_pdf_text(getattr(widget, "field_value", ""))
+                if name and value:
+                    values[name] = value
+        return values
+    finally:
+        doc.close()
+
+
+def _case_data_from_known_template_values(spec_key: str, values: dict[str, str]) -> dict[str, str]:
+    if spec_key == ALLEGATO_E_SPEC.key:
+        email_local = values.get("email_local_part", "")
+        email_domain = values.get("email_domain", "")
+        email = ""
+        if email_local and email_domain:
+            email = f"{email_local}@{email_domain}"
+        return {
+            "full_name": values.get("istante_nome_completo", ""),
+            "birth_place": values.get("nascita_comune", ""),
+            "birth_province_name": values.get("nascita_provincia", ""),
+            "birth_province_code": values.get("nascita_sigla_provincia", ""),
+            "birth_date": values.get("nascita_data", ""),
+            "tax_code": values.get("codice_fiscale", ""),
+            "payroll_number": values.get("partita_stipendiale", ""),
+            "residence_city": values.get("residenza_comune", ""),
+            "residence_province_name": values.get("residenza_provincia", ""),
+            "residence_province_code": values.get("residenza_sigla_provincia", ""),
+            "residence_cap": values.get("residenza_cap", ""),
+            "residence_street": values.get("residenza_via", ""),
+            "residence_number": values.get("residenza_numero", ""),
+            "phone": values.get("telefono", ""),
+            "fax": values.get("fax", ""),
+            "email": email,
+            "lender_name": values.get("istituto_delegatario", ""),
+            "iban": values.get("iban_istituto_delegatario", ""),
+            "loan_amount": values.get("importo_finanziamento_cifre", ""),
+            "total_ceded": values.get("importo_globale_ceduto_cifre", ""),
+            "fees_total": values.get("spese_complessive_cifre", ""),
+            "interest_total": values.get("interessi_complessivi_cifre", ""),
+            "monthly_installment": values.get("importo_trattenuta_mensile", values.get("importo_rata_estinzione", "")),
+            "installment_count": values.get("numero_rate_da_estinguere", ""),
+            "tan": values.get("tan", ""),
+            "taeg": values.get("taeg", ""),
+            "teg": values.get("teg", ""),
+            "insurance": values.get("garanzia_prestito", ""),
+            "other_financing_lender": values.get("estinzione_altro_finanziamento_istituto", ""),
+            "other_financing_installment": values.get("estinzione_altro_finanziamento_rata", ""),
+            "other_financing_expiry": values.get("estinzione_altro_finanziamento_scadenza", ""),
+        }
+    if spec_key == ALLEGATO_C_SPEC.key:
+        return {
+            "net_disbursed": values.get("importo_erogato", ""),
+            "total_ceded": values.get("importo_globale_ceduto", ""),
+            "fees_total": values.get("spese_complessive", ""),
+            "interest_total": values.get("interessi_complessivi", ""),
+            "tan": values.get("tan", ""),
+            "taeg": values.get("isc_taeg", ""),
+            "installment_count": values.get("numero_rate_estinguibili", ""),
+            "monthly_installment": values.get("importo_rata_estinzione", ""),
+            "insurance": values.get("garanzia_assicurativa", ""),
+            "other_financing_installment": values.get("revoca_finanziamento_importo", ""),
+            "other_financing_expiry": values.get("revoca_finanziamento_scadenza", ""),
+            "other_financing_lender": values.get("revoca_finanziamento_contratto", ""),
+            "full_name": values.get("dipendente_nome_cognome", ""),
+            "birth_place": values.get("dipendente_nascita_luogo", ""),
+            "birth_province_code": values.get("dipendente_nascita_provincia", ""),
+            "birth_date": values.get("dipendente_nascita_data", ""),
+            "tax_code": values.get("dipendente_codice_fiscale", ""),
+            "service_office": values.get("dipendente_in_servizio_presso", ""),
+            "employer_entity": values.get("dipendente_ente_appartenenza", ""),
+        }
+    return {}
+
+
+def _extract_known_template_fields_from_widgets(widget_values: dict[str, str]) -> tuple[Optional[str], Optional[str], dict[str, str]]:
+    best_spec: Optional[PdfTemplateSpec] = None
+    best_hits = 0
+    best_logical_values: dict[str, str] = {}
+    for spec in (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC):
+        widget_to_name = {field.widget: field.name for field in iter_pdf_fields(spec)}
+        logical_values = {
+            widget_to_name[widget_name]: sanitize_pdf_text(widget_value)
+            for widget_name, widget_value in widget_values.items()
+            if widget_name in widget_to_name and sanitize_pdf_text(widget_value)
+        }
+        hits = len(logical_values)
+        if hits > best_hits:
+            best_spec = spec
+            best_hits = hits
+            best_logical_values = logical_values
+    if best_spec is None or best_hits < 3:
+        return None, None, {}
+    case_data = {
+        name: value
+        for name, value in _case_data_from_known_template_values(best_spec.key, best_logical_values).items()
+        if sanitize_pdf_text(value)
+    }
+    return best_spec.key, best_spec.label, case_data
+
+
+def _classify_document_text(text: str, filename: str) -> tuple[str, str, int]:
+    haystack = f"{filename}\n{text}".lower()
+    best_key = "documento_generico"
+    best_label = "Documento generico"
+    best_hits = 0
+    for doc_type in DOCUMENT_TYPE_DEFS:
+        hits = sum(1 for keyword in doc_type.keywords if keyword in haystack)
+        if hits > best_hits:
+            best_key = doc_type.key
+            best_label = doc_type.label
+            best_hits = hits
+    return best_key, best_label, best_hits
+
+
+def extract_document_result(filename: str, raw_bytes: bytes) -> DocumentExtractionResult:
+    text, page_count, warnings = _extract_text_from_supported_document(filename, raw_bytes)
+    normalized = _normalize_search_text(text)
+    document_key, document_label, keyword_hits = _classify_document_text(normalized, filename)
+    extracted: dict[str, str] = {}
+    widget_key = widget_label = special_key = special_label = None
+    widget_fields: dict[str, str] = {}
+    special_fields: dict[str, str] = {}
+    if _is_pdf_dossier_file(filename):
+        widget_values = _safe_pdf_widget_values_from_bytes(raw_bytes)
+        widget_key, widget_label, widget_fields = _extract_known_template_fields_from_widgets(widget_values)
+        special_key, special_label, special_fields = _extract_specialized_document_fields(filename, raw_bytes, normalized)
+    skip_text_fallback = False
+    if widget_fields:
+        extracted.update(widget_fields)
+        document_key = widget_key or document_key
+        document_label = widget_label or document_label
+        skip_text_fallback = True
+    elif special_fields:
+        extracted.update(special_fields)
+        document_key = special_key or document_key
+        document_label = special_label or document_label
+        skip_text_fallback = True
+
+    if not skip_text_fallback:
+        for field in CASE_FIELD_DEFS:
+            if field.name in extracted:
+                continue
+            value = _extract_first_pattern_value(field.name, normalized)
+            if value:
+                extracted[field.name] = value
+
+    if not extracted:
+        warnings.append("Nessun campo utile estratto con le regole disponibili.")
+
+    return DocumentExtractionResult(
+        filename=filename,
+        document_key=document_key,
+        document_label=document_label,
+        page_count=page_count,
+        text_length=len(normalized),
+        keyword_hits=keyword_hits,
+        extracted_fields=extracted,
+        warnings=warnings,
+    )
+
+
+def aggregate_document_results(results: list[DocumentExtractionResult]) -> list[AggregatedCaseField]:
+    best: dict[str, tuple[float, AggregatedCaseField]] = {}
+    for result in results:
+        priorities = _DOC_CATEGORY_PRIORITY.get(result.document_key, _DOC_CATEGORY_PRIORITY["documento_generico"])
+        for field_name, value in result.extracted_fields.items():
+            field_def = _CASE_FIELD_DEF_MAP[field_name]
+            score = priorities.get(field_def.category, 45) + min(len(value), 40) / 100.0
+            candidate = AggregatedCaseField(
+                name=field_name,
+                label=field_def.label,
+                value=value,
+                source_filename=result.filename,
+                source_document_label=result.document_label,
+            )
+            current = best.get(field_name)
+            if current is None or score > current[0]:
+                best[field_name] = (score, candidate)
+    aggregated: list[AggregatedCaseField] = []
+    for field_def in CASE_FIELD_DEFS:
+        item = best.get(field_def.name)
+        if item:
+            aggregated.append(item[1])
+    return infer_aggregated_fields(aggregated)
+
+
+def aggregated_fields_to_dict(fields: list[AggregatedCaseField]) -> dict[str, str]:
+    return {field.name: field.value for field in fields}
+
+
+def _parse_decimal_maybe(raw: str) -> Optional[float]:
+    try:
+        return parse_decimal_loose(raw)
+    except Exception:
+        return None
+
+
+def _format_money_it(amount: float) -> str:
+    return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def infer_aggregated_fields(fields: list[AggregatedCaseField]) -> list[AggregatedCaseField]:
+    by_name = {field.name: field for field in fields}
+
+    def add_inferred(name: str, value: str, reason: str) -> None:
+        if name in by_name or not value:
+            return
+        by_name[name] = AggregatedCaseField(
+            name=name,
+            label=_CASE_FIELD_DEF_MAP[name].label,
+            value=value,
+            source_filename="Sistema",
+            source_document_label=reason,
+        )
+
+    installment = _parse_decimal_maybe(by_name["monthly_installment"].value) if "monthly_installment" in by_name else None
+    total_ceded = _parse_decimal_maybe(by_name["total_ceded"].value) if "total_ceded" in by_name else None
+    loan_amount = _parse_decimal_maybe(by_name["loan_amount"].value) if "loan_amount" in by_name else None
+    net_disbursed = _parse_decimal_maybe(by_name["net_disbursed"].value) if "net_disbursed" in by_name else None
+
+    count = None
+    if "installment_count" in by_name:
+        try:
+            count = int(re.sub(r"[^\d]", "", by_name["installment_count"].value))
+        except Exception:
+            count = None
+
+    allowed_durations = {48, 60, 72, 84, 96, 108, 120}
+
+    if installment is not None and count in allowed_durations and "total_ceded" not in by_name:
+        add_inferred("total_ceded", _format_money_it(round(installment * count, 2)), "Derivato da rata x durata")
+
+    if installment is not None and total_ceded is not None and "installment_count" not in by_name and installment > 0:
+        derived_count = round(total_ceded / installment)
+        if derived_count in allowed_durations and abs((installment * derived_count) - total_ceded) <= 0.5:
+            add_inferred("installment_count", str(int(derived_count)), "Derivato da montante / rata")
+
+    if total_ceded is not None and count in allowed_durations and "monthly_installment" not in by_name and count > 0:
+        add_inferred("monthly_installment", _format_money_it(round(total_ceded / count, 2)), "Derivato da montante / durata")
+
+    if loan_amount is not None and "net_disbursed" not in by_name:
+        add_inferred("net_disbursed", _format_money_it(round(loan_amount, 2)), "Derivato da importo finanziamento")
+
+    if net_disbursed is not None and "loan_amount" not in by_name:
+        add_inferred("loan_amount", _format_money_it(round(net_disbursed, 2)), "Derivato da importo erogato")
+
+    return [by_name[field_def.name] for field_def in CASE_FIELD_DEFS if field_def.name in by_name]
+
+
+def build_review_sections(fields: list[AggregatedCaseField]) -> list[dict]:
+    values = aggregated_fields_to_dict(fields)
+    sources = {field.name: field for field in fields}
+    sections: list[dict] = []
+    for category in ("anagrafica", "residenza", "contatti", "lavoro", "finanza", "bancario"):
+        section_fields = []
+        for field_def in CASE_FIELD_DEFS:
+            if field_def.category != category:
+                continue
+            source = sources.get(field_def.name)
+            section_fields.append({
+                "name": field_def.name,
+                "label": field_def.label,
+                "placeholder": field_def.placeholder,
+                "value": values.get(field_def.name, ""),
+                "source_filename": source.source_filename if source else "",
+                "source_label": source.source_document_label if source else "",
+            })
+        sections.append({
+            "title": _CASE_CATEGORY_LABELS.get(category, category.title()),
+            "fields": section_fields,
+        })
+    return sections
+
+
+def build_prefill_for_template(spec_key: str, case_data: dict[str, str]) -> dict[str, str]:
+    spec = get_pdf_template_spec(spec_key)
+    data = {k: sanitize_pdf_text(v) for k, v in case_data.items() if sanitize_pdf_text(v)}
+    email_local, email_domain = _split_email(data.get("email", ""))
+
+    if spec.key == ALLEGATO_E_SPEC.key:
+        mapped = {
+            "istante_nome_completo": data.get("full_name", ""),
+            "nascita_comune": data.get("birth_place", ""),
+            "nascita_provincia": data.get("birth_province_name", data.get("birth_province_code", "")),
+            "nascita_sigla_provincia": data.get("birth_province_code", ""),
+            "nascita_data": data.get("birth_date", ""),
+            "codice_fiscale": data.get("tax_code", ""),
+            "partita_stipendiale": data.get("payroll_number", ""),
+            "residenza_comune": data.get("residence_city", ""),
+            "residenza_provincia": data.get("residence_province_name", data.get("residence_province_code", "")),
+            "residenza_sigla_provincia": data.get("residence_province_code", ""),
+            "residenza_cap": data.get("residence_cap", ""),
+            "residenza_via": data.get("residence_street", ""),
+            "residenza_numero": data.get("residence_number", ""),
+            "telefono": data.get("phone", ""),
+            "fax": data.get("fax", ""),
+            "email_local_part": email_local,
+            "email_domain": email_domain,
+            "istituto_delegatario": data.get("lender_name", ""),
+            "importo_trattenuta_mensile": data.get("monthly_installment", ""),
+            "iban_istituto_delegatario": data.get("iban", ""),
+            "importo_finanziamento_cifre": data.get("loan_amount", data.get("net_disbursed", "")),
+            "importo_globale_ceduto_cifre": data.get("total_ceded", ""),
+            "spese_complessive_cifre": data.get("fees_total", ""),
+            "interessi_complessivi_cifre": data.get("interest_total", ""),
+            "tan": data.get("tan", ""),
+            "taeg": data.get("taeg", ""),
+            "teg": data.get("teg", ""),
+            "numero_rate_da_estinguere": data.get("installment_count", ""),
+            "importo_rata_estinzione": data.get("monthly_installment", ""),
+            "garanzia_prestito": data.get("insurance", ""),
+            "estinzione_altro_finanziamento_istituto": data.get("other_financing_lender", ""),
+            "estinzione_altro_finanziamento_rata": data.get("other_financing_installment", ""),
+            "estinzione_altro_finanziamento_scadenza": data.get("other_financing_expiry", ""),
+        }
+    elif spec.key == ALLEGATO_C_SPEC.key:
+        mapped = {
+            "importo_erogato": data.get("net_disbursed", data.get("loan_amount", "")),
+            "importo_globale_ceduto": data.get("total_ceded", ""),
+            "spese_complessive": data.get("fees_total", ""),
+            "interessi_complessivi": data.get("interest_total", ""),
+            "tan": data.get("tan", ""),
+            "isc_taeg": data.get("taeg", ""),
+            "numero_rate_estinguibili": data.get("installment_count", ""),
+            "importo_rata_estinzione": data.get("monthly_installment", ""),
+            "garanzia_assicurativa": data.get("insurance", ""),
+            "revoca_finanziamento_importo": data.get("other_financing_installment", ""),
+            "revoca_finanziamento_scadenza": data.get("other_financing_expiry", ""),
+            "revoca_finanziamento_contratto": data.get("other_financing_lender", ""),
+            "dipendente_nome_cognome": data.get("full_name", ""),
+            "dipendente_nascita_luogo": data.get("birth_place", ""),
+            "dipendente_nascita_provincia": data.get("birth_province_code", data.get("birth_province_name", "")),
+            "dipendente_nascita_data": data.get("birth_date", ""),
+            "dipendente_codice_fiscale": data.get("tax_code", ""),
+            "dipendente_in_servizio_presso": data.get("service_office", ""),
+            "dipendente_ente_appartenenza": data.get("employer_entity", ""),
+        }
+    else:
+        mapped = {}
+
+    clean = default_pdf_form_values(spec)
+    clean.update({k: v for k, v in mapped.items() if v})
+    return clean
+
 # =========================
 #  WEB (OPZIONALE) - localhost
 # =========================
@@ -1917,6 +3295,145 @@ def run_web(
 
     .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
 
+    /* ─── Module Compiler ─── */
+    .module-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .module-card {
+      padding: 22px;
+      background: rgba(30, 41, 59, 0.34);
+      border: 1px solid rgba(100, 116, 139, 0.16);
+      border-radius: var(--radius);
+    }
+
+    .module-card h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .module-card p {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    .module-meta {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .module-meta span {
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-light);
+      background: rgba(14, 165, 233, 0.08);
+      border: 1px solid rgba(14, 165, 233, 0.18);
+    }
+
+    .helper-text {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .info-banner {
+      padding: 12px 16px;
+      margin-bottom: 18px;
+      border-radius: 10px;
+      background: rgba(14, 165, 233, 0.08);
+      border: 1px solid rgba(14, 165, 233, 0.18);
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .upload-panel {
+      padding: 18px;
+      border-radius: var(--radius-sm);
+      border: 1px dashed rgba(14, 165, 233, 0.28);
+      background: rgba(14, 165, 233, 0.04);
+      margin-bottom: 18px;
+    }
+
+    .upload-panel input[type="file"] {
+      width: 100%;
+      margin-top: 10px;
+      color: var(--text-secondary);
+    }
+
+    .dossier-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .dossier-item {
+      padding: 16px;
+      border-radius: 12px;
+      background: rgba(30, 41, 59, 0.34);
+      border: 1px solid rgba(100, 116, 139, 0.16);
+    }
+
+    .dossier-item-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .dossier-item h4 {
+      font-size: 15px;
+      margin: 0;
+      color: var(--text-primary);
+    }
+
+    .dossier-badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .dossier-badges span {
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-light);
+      background: rgba(14, 165, 233, 0.08);
+      border: 1px solid rgba(14, 165, 233, 0.18);
+    }
+
+    .field-summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .field-summary .preview-item {
+      margin: 0;
+    }
+
+    .warning-list {
+      margin-top: 10px;
+      color: #facc15;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
     /* ─── Nav ─── */
     .nav {
       display: flex;
@@ -2119,6 +3636,8 @@ def run_web(
     }
     @media (max-width: 640px) {
       .form-grid { grid-template-columns: 1fr; }
+      .module-grid { grid-template-columns: 1fr; }
+      .field-summary { grid-template-columns: 1fr; }
       .preview-grid { grid-template-columns: 1fr; }
       .card { padding: 20px; }
       .preview-actions { flex-direction: column; }
@@ -2151,6 +3670,8 @@ def run_web(
 
         <nav class="nav">
           <a href="/" class="{{ 'active' if page == 'form' }}">✏️ Nuovo</a>
+          <a href="/dossier" class="{{ 'active' if page == 'dossier' }}">🗂️ Dossier</a>
+          <a href="/moduli" class="{{ 'active' if page == 'modules' }}">📎 Moduli</a>
           <a href="/storico" class="{{ 'active' if page == 'history' }}">📂 Storico</a>
           <a href="/impostazioni" class="{{ 'active' if page == 'settings' }}">⚙️ Impostazioni</a>
         </nav>
@@ -2714,7 +4235,7 @@ def run_web(
     # ─── History Page ───
     HISTORY_CONTENT = """
     <div class="card">
-      <div class="section-title">📂 Storico Preventivi</div>
+      <div class="section-title">📂 Storico PDF</div>
       {% if files %}
       <ul class="history-list">
         {% for f in files %}
@@ -2730,10 +4251,166 @@ def run_web(
       {% else %}
       <div class="empty-state">
         <div class="icon">📭</div>
-        <p>Nessun preventivo generato ancora.</p>
+        <p>Nessun PDF generato ancora.</p>
         <p style="margin-top:8px;"><a href="/" style="color:var(--accent-light);">Crea il primo preventivo →</a></p>
       </div>
       {% endif %}
+    </div>
+    """
+
+    DOSSIER_CONTENT = """
+    <div class="card">
+      <div class="section-title">🗂️ Dossier Documenti</div>
+      <div class="info-banner">
+        Engine deterministico, senza AI: accetta <strong>PDF, JPG e PNG</strong>, classifica i file con parole chiave
+        ed estrae i campi con regex, anchor text, parser dedicati e OCR locale quando disponibile. Al momento e forte soprattutto su
+        <strong>cedolino NoiPA/MEF</strong> e <strong>contratto di finanziamento/delega</strong> in PDF testuale.
+        {{ ocr_status_message }}
+      </div>
+
+      {% if error %}
+      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="post" action="/dossier" enctype="multipart/form-data">
+        <div class="upload-panel">
+          <strong>Carica i documenti sorgente</strong>
+          <div class="helper-text">
+            Esempi utili: cedolino NoiPA, contratto o preventivo finanziario, modulo gia compilato, documento anagrafico, screenshot o scansione.
+          </div>
+          <input type="file" name="documenti" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg" multiple required/>
+        </div>
+        <button type="submit" class="btn-primary" style="margin-top:0">Analizza documenti</button>
+      </form>
+
+      {% if results %}
+      <div class="section-title" style="margin-top:24px">📄 File Analizzati</div>
+      <div class="dossier-list">
+        {% for result in results %}
+        <div class="dossier-item">
+          <div class="dossier-item-head">
+            <div>
+              <h4>{{ result.filename }}</h4>
+              <div class="helper-text">{{ result.document_label }}</div>
+            </div>
+            <div class="dossier-badges">
+              <span>{{ result.page_count }} pag.</span>
+              <span>{{ result.text_length }} caratteri</span>
+              <span>{{ result.extracted_fields|length }} campi</span>
+            </div>
+          </div>
+          {% if result.warnings %}
+          <div class="warning-list">
+            {% for warning in result.warnings %}
+            <div>• {{ warning }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="section-title" style="margin-top:24px">🧾 Revisione Dati</div>
+      <div class="info-banner">
+        Qui puoi controllare i dati estratti, correggerli, integrare quelli mancanti e poi aprire il modulo gia precompilato.
+      </div>
+      <form method="post">
+        {% for section in review_sections %}
+        <div class="section-title" style="margin-top:{{ '0' if loop.first else '20px' }}">🧩 {{ section.title }}</div>
+        <div class="form-grid">
+          {% for field in section.fields %}
+          <div class="form-group">
+            <label>{{ field.label }}</label>
+            <input name="{{ field.name }}" value="{{ field.value }}" placeholder="{{ field.placeholder }}" autocomplete="off"/>
+            {% if field.source_filename %}
+            <div class="helper-text">Fonte: {{ field.source_filename }} · {{ field.source_label }}</div>
+            {% else %}
+            <div class="helper-text">Non trovato automaticamente: puoi inserirlo a mano.</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+
+        <div class="section-title" style="margin-top:24px">📎 Apri Modulo</div>
+        <div class="preview-actions">
+          <button type="submit" formaction="/moduli/allegato-e/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato E precompilato</button>
+          <button type="submit" formaction="/moduli/allegato-c/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato C precompilato</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+    """
+
+    MODULI_HOME_CONTENT = """
+    <div class="card">
+      <div class="section-title">📎 Compilatore Modulistica MEF</div>
+      <div class="info-banner">
+        I due template PDF presenti in <code>docs/</code> sono stati mappati sui rispettivi widget:
+        puoi compilare i campi con etichette leggibili e scaricare direttamente il PDF finale.
+      </div>
+
+      <div class="module-grid">
+        {% for spec in specs %}
+        <div class="module-card">
+          <h3>{{ spec.label }}</h3>
+          <p>{{ spec.description }}</p>
+          <div class="module-meta">
+            <span>{{ spec.summary }}</span>
+            <span>{{ spec.template_name }}</span>
+          </div>
+          <a href="/moduli/{{ spec.slug }}" class="btn-primary" style="margin-top:0;text-decoration:none">
+            Apri compilatore
+          </a>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    """
+
+    MODULO_FORM_CONTENT = """
+    <div class="card">
+      <div class="section-title">📄 {{ spec.label }}</div>
+      <div class="info-banner">
+        {{ spec.description }}<br/>
+        Template di origine: <code>{{ spec.template_name }}</code>. {{ spec.summary }}
+      </div>
+
+      {% if error %}
+      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="post" action="/moduli/{{ spec.slug }}/download">
+        {% for section in spec.sections %}
+        <div class="section-title" style="margin-top:{{ '0' if loop.first else '20px' }}">{{ section.icon }} {{ section.title }}</div>
+        <p style="font-size:12px;color:var(--text-muted);margin:-6px 0 14px">{{ section.description }}</p>
+        <div class="form-grid">
+          {% for field in section.fields %}
+          <div class="form-group {{ 'full-width' if field.full_width else '' }}">
+            <label>{{ field.label }}</label>
+            <input
+              name="{{ field.name }}"
+              value="{{ values.get(field.name, '') }}"
+              placeholder="{{ field.placeholder }}"
+              autocomplete="off"
+            />
+            {% if field.help_text %}
+            <div class="helper-text">{{ field.help_text }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+
+        <div style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap">
+          <button type="submit" class="btn-primary" style="flex:2;min-width:240px">{{ spec.button_label }}</button>
+          <a href="/moduli" class="btn-secondary" style="flex:1;min-width:180px;display:flex;align-items:center;justify-content:center">↩ Torna ai moduli</a>
+        </div>
+      </form>
     </div>
     """
     def parse_float_web(s: str) -> float:
@@ -2752,6 +4429,37 @@ def run_web(
         content_html = render_template_string(content_tpl, **kwargs)
         scripts_html = render_template_string(scripts_tpl, **kwargs) if scripts_tpl else ""
         return render_template_string(BASE_HTML, content=content_html, scripts=scripts_html, **kwargs)
+
+    def render_modulo_form(spec_key: str, values: Optional[dict[str, str]] = None, error: str = ""):
+        spec = get_pdf_template_spec(spec_key)
+        merged_values = default_pdf_form_values(spec)
+        if values:
+            merged_values.update(values)
+        return render_page(
+            MODULO_FORM_CONTENT,
+            page="modules",
+            title=spec.label,
+            spec=spec,
+            values=merged_values,
+            error=error,
+        )
+
+    def render_dossier_page(
+        results: Optional[list[DocumentExtractionResult]] = None,
+        aggregated_fields: Optional[list[AggregatedCaseField]] = None,
+        error: str = "",
+    ):
+        reviewed_fields = infer_aggregated_fields(aggregated_fields or [])
+        return render_page(
+            DOSSIER_CONTENT,
+            page="dossier",
+            title="Dossier",
+            results=results or [],
+            aggregated_fields=reviewed_fields,
+            review_sections=build_review_sections(reviewed_fields),
+            ocr_status_message=get_ocr_status_message(),
+            error=error,
+        )
 
     def _render_preview_html(preventivi: list, prof: BrandingProfile, text_overrides: Optional[dict] = None) -> str:
         """Render an HTML fragment that mirrors the PDF layout (navy/gold theme)."""
@@ -3023,6 +4731,93 @@ def run_web(
     @app.get("/")
     def home():
         return render_page(SETUP_BANNER + FORM_CONTENT, FORM_SCRIPTS, page="form", title="Nuovo Preventivo")
+
+    @app.get("/dossier")
+    def dossier_get():
+        return render_dossier_page()
+
+    @app.post("/dossier")
+    def dossier_post():
+        uploaded_files = [file for file in request.files.getlist("documenti") if file and file.filename]
+        if not uploaded_files:
+            return render_dossier_page(error="Carica almeno un PDF, JPG o PNG da analizzare."), 400
+
+        results: list[DocumentExtractionResult] = []
+        errors: list[str] = []
+        for file in uploaded_files:
+            safe_name = Path(file.filename).name
+            if not is_supported_dossier_file(safe_name):
+                errors.append(f"{safe_name}: formato non supportato, usa PDF, JPG o PNG.")
+                continue
+            data = file.read()
+            if not data:
+                errors.append(f"{safe_name}: file vuoto.")
+                continue
+            try:
+                results.append(extract_document_result(safe_name, data))
+            except Exception as exc:
+                errors.append(f"{safe_name}: {exc}")
+
+        aggregated_fields = aggregate_document_results(results)
+        if not results and errors:
+            return render_dossier_page(error=" ".join(errors)), 400
+
+        error_text = " ".join(errors) if errors else ""
+        return render_dossier_page(results=results, aggregated_fields=aggregated_fields, error=error_text)
+
+    @app.get("/moduli")
+    def moduli_home():
+        specs = (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC)
+        return render_page(MODULI_HOME_CONTENT, page="modules", title="Modulistica MEF", specs=specs)
+
+    @app.get("/moduli/<slug>")
+    def modulo_form(slug):
+        try:
+            return render_modulo_form(slug)
+        except KeyError:
+            return "Modulo non trovato", 404
+
+    @app.post("/moduli/<slug>/prefill")
+    def modulo_prefill(slug):
+        try:
+            spec = get_pdf_template_spec(slug)
+            raw_values = request.form.to_dict(flat=True)
+            if any(name in raw_values for name in _CASE_FIELD_DEF_MAP):
+                manual_fields = []
+                for field_def in CASE_FIELD_DEFS:
+                    value = sanitize_pdf_text(raw_values.get(field_def.name, ""))
+                    if not value:
+                        continue
+                    manual_fields.append(
+                        AggregatedCaseField(
+                            name=field_def.name,
+                            label=field_def.label,
+                            value=value,
+                            source_filename="Revisione utente",
+                            source_document_label="Dato confermato/modificato",
+                        )
+                    )
+                case_values = aggregated_fields_to_dict(infer_aggregated_fields(manual_fields))
+                values = build_prefill_for_template(spec.key, case_values)
+            else:
+                values = raw_values
+            return render_modulo_form(slug, values=values)
+        except KeyError:
+            return "Modulo non trovato", 404
+
+    @app.post("/moduli/<slug>/download")
+    def modulo_download(slug):
+        try:
+            spec = get_pdf_template_spec(slug)
+            output_path, values, _ = generate_pdf_template(spec.key, request.form.to_dict(flat=True), out_dir)
+            return send_file(output_path, as_attachment=True, download_name=output_path.name)
+        except KeyError:
+            return "Modulo non trovato", 404
+        except Exception as exc:
+            try:
+                return render_modulo_form(slug, values=request.form.to_dict(flat=True), error=str(exc)), 400
+            except KeyError:
+                return f"Errore generazione modulo: {exc}", 400
 
     @app.post("/genera")
     def genera():
