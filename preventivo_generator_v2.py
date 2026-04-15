@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -187,8 +188,60 @@ class BrandingProfile:
     def is_configured(self) -> bool:
         return bool(self.nome_agente.strip())
 
-_CONFIG_PATH = Path(__file__).parent / "config.json"
-_ASSETS_DIR = Path(__file__).parent / "assets"
+
+def _is_frozen_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _get_user_data_root() -> Path:
+    base = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    return base / "QuintoQuote"
+
+
+def _default_config_path() -> Path:
+    if _is_frozen_runtime():
+        return _get_user_data_root() / "config.json"
+    return Path(__file__).parent / "config.json"
+
+
+def _default_assets_dir() -> Path:
+    if _is_frozen_runtime():
+        return _get_user_data_root() / "assets"
+    return Path(__file__).parent / "assets"
+
+
+def _default_output_dir() -> Path:
+    if _is_frozen_runtime():
+        return _get_user_data_root() / "output_preventivi"
+    return Path("output_preventivi")
+
+
+def _default_runtime_temp_dir() -> Path:
+    if _is_frozen_runtime():
+        return _get_user_data_root() / ".quintoquote_tmp"
+    return Path(__file__).resolve().parent / ".quintoquote_tmp"
+
+
+def _resolve_pdf_template_dir() -> Path:
+    candidates: list[Path] = []
+    for root_candidate in (
+        getattr(sys, "_MEIPASS", ""),
+        Path(sys.executable).resolve().parent if _is_frozen_runtime() else None,
+        Path(__file__).parent,
+    ):
+        if not root_candidate:
+            continue
+        root = Path(root_candidate)
+        candidates.append(root / "docs")
+    candidates.append(Path(__file__).parent / "docs")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path(__file__).parent / "docs"
+
+
+_CONFIG_PATH = _default_config_path()
+_ASSETS_DIR = _default_assets_dir()
 _config_lock = threading.Lock()
 _cached_profile: Optional[BrandingProfile] = None
 _cached_profile_path: Optional[Path] = None
@@ -201,7 +254,7 @@ _EDITABLE_FIELDS = {"cliente_nome", "note", "disclaimer", "closing"}
 
 
 def _ensure_assets_dir() -> Path:
-    _ASSETS_DIR.mkdir(exist_ok=True)
+    _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     return _ASSETS_DIR
 
 
@@ -218,7 +271,22 @@ def configure_runtime_paths(config_path: Optional[Path] = None, assets_dir: Opti
 def normalize_cli_argv(argv: list[str]) -> tuple[list[str], bool]:
     if len(argv) > 1 and argv[1].strip().lower() == "start":
         return [argv[0], "--web", *argv[2:]], True
+    if _is_frozen_runtime() and len(argv) == 1:
+        return [argv[0], "--web"], True
     return argv, False
+
+
+def _pick_available_port(host: str, preferred_port: int, max_tries: int = 20) -> int:
+    host = host or "127.0.0.1"
+    for port in range(preferred_port, preferred_port + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+            except OSError:
+                continue
+            return port
+    return preferred_port
 
 
 def sanitize_hex_color(raw: str, fallback: str) -> str:
@@ -1459,6 +1527,8 @@ class PdfFieldDef:
     full_width: bool = False
     font_size: float = 10.0
     default: str = ""
+    overlay_rect: Optional[tuple[float, float, float, float]] = None
+    overlay_page: int = 0
 
 
 @dataclass(frozen=True)
@@ -1483,7 +1553,7 @@ class PdfTemplateSpec:
     sections: tuple[PdfSectionDef, ...]
 
 
-_PDF_TEMPLATE_DIR = Path(__file__).parent / "docs"
+_PDF_TEMPLATE_DIR = _resolve_pdf_template_dir()
 _DYNAMIC_DEFAULT_TODAY = "__TODAY__"
 
 ALLEGATO_C_SPEC = PdfTemplateSpec(
@@ -1502,14 +1572,14 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
             icon="🏦",
             description="Campi economici e dati dell'eventuale finanziamento da estinguere.",
             fields=(
-                PdfFieldDef("importo_erogato", "Testo87", "Importo erogato", "Es. 30.000,00"),
-                PdfFieldDef("importo_globale_ceduto", "Testo88", "Importo globale ceduto", "Es. 42.000,00"),
-                PdfFieldDef("spese_complessive", "Testo89", "Spese complessive", "Es. 1.250,00"),
-                PdfFieldDef("interessi_complessivi", "Testo90", "Interessi complessivi", "Es. 10.750,00"),
-                PdfFieldDef("tan", "Testo91", "TAN", "Es. 4,500"),
-                PdfFieldDef("isc_taeg", "Testo92", "ISC / TAEG", "Es. 5,120"),
-                PdfFieldDef("numero_rate_estinguibili", "Testo93", "Estinguibile in n°", "Es. 120"),
-                PdfFieldDef("importo_rata_estinzione", "Testo94", "Rate mensili di euro", "Es. 350,00"),
+                PdfFieldDef("importo_erogato", "Testo87", "Importo erogato", "Es. 30.000,00", overlay_rect=(154, 205, 273, 218)),
+                PdfFieldDef("importo_globale_ceduto", "Testo88", "Importo globale ceduto", "Es. 42.000,00", overlay_rect=(441, 205, 561, 218)),
+                PdfFieldDef("spese_complessive", "Testo89", "Spese complessive", "Es. 1.250,00", overlay_rect=(154, 224, 273, 236)),
+                PdfFieldDef("interessi_complessivi", "Testo90", "Interessi complessivi", "Es. 10.750,00", overlay_rect=(441, 224, 561, 236)),
+                PdfFieldDef("tan", "Testo91", "TAN", "Es. 4,500", overlay_rect=(64, 242, 138, 255)),
+                PdfFieldDef("isc_taeg", "Testo92", "ISC / TAEG", "Es. 5,120", overlay_rect=(350, 242, 426, 255)),
+                PdfFieldDef("numero_rate_estinguibili", "Testo93", "Estinguibile in n°", "Es. 120", overlay_rect=(154, 260, 273, 271)),
+                PdfFieldDef("importo_rata_estinzione", "Testo94", "Rate mensili di euro", "Es. 350,00", overlay_rect=(441, 260, 561, 271)),
                 PdfFieldDef(
                     "garanzia_assicurativa",
                     "Testo95",
@@ -1517,9 +1587,10 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. Polizza n. 12345 del 15/04/2026",
                     full_width=True,
                     font_size=9.0,
+                    overlay_rect=(190, 294, 562, 308),
                 ),
-                PdfFieldDef("revoca_finanziamento_importo", "Testo2", "Revoca altro finanziamento: importo", "Es. 220,00"),
-                PdfFieldDef("revoca_finanziamento_scadenza", "Testo3", "Revoca altro finanziamento: scadenza", "Es. 31/12/2030"),
+                PdfFieldDef("revoca_finanziamento_importo", "Testo2", "Revoca altro finanziamento: importo", "Es. 220,00", overlay_rect=(297, 322, 390, 334)),
+                PdfFieldDef("revoca_finanziamento_scadenza", "Testo3", "Revoca altro finanziamento: scadenza", "Es. 31/12/2030", overlay_rect=(459, 322, 561, 334)),
                 PdfFieldDef(
                     "revoca_finanziamento_contratto",
                     "Testo8",
@@ -1527,6 +1598,7 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. Banca XYZ - pratica 123456",
                     full_width=True,
                     font_size=9.0,
+                    overlay_rect=(100, 340, 562, 352),
                 ),
             ),
         ),
@@ -1542,10 +1614,11 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. Rossi Mario",
                     full_width=True,
                     font_size=9.5,
+                    overlay_rect=(135, 414, 562, 427),
                 ),
-                PdfFieldDef("dipendente_nascita_luogo", "Testo97", "Nato/a a", "Es. Roma"),
-                PdfFieldDef("dipendente_nascita_provincia", "Testo98", "Prov.", "Es. RM", font_size=9.5),
-                PdfFieldDef("dipendente_nascita_data", "Testo99", "Il", "GG/MM/AAAA"),
+                PdfFieldDef("dipendente_nascita_luogo", "Testo97", "Nato/a a", "Es. Roma", overlay_rect=(81, 444, 319, 456)),
+                PdfFieldDef("dipendente_nascita_provincia", "Testo98", "Prov.", "Es. RM", font_size=9.5, overlay_rect=(369, 444, 408, 456)),
+                PdfFieldDef("dipendente_nascita_data", "Testo99", "Il", "GG/MM/AAAA", overlay_rect=(441, 444, 562, 456)),
                 PdfFieldDef(
                     "dipendente_codice_fiscale",
                     "Testo100",
@@ -1553,6 +1626,7 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. RSSMRA80A01H501Z",
                     full_width=True,
                     font_size=9.5,
+                    overlay_rect=(127, 468, 562, 481),
                 ),
                 PdfFieldDef(
                     "dipendente_in_servizio_presso",
@@ -1561,6 +1635,7 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. Ministero dell'Economia e delle Finanze",
                     full_width=True,
                     font_size=9.0,
+                    overlay_rect=(127, 497, 562, 510),
                 ),
                 PdfFieldDef(
                     "dipendente_ente_appartenenza",
@@ -1569,8 +1644,9 @@ ALLEGATO_C_SPEC = PdfTemplateSpec(
                     "Es. Ragioneria Territoriale dello Stato di Roma",
                     full_width=True,
                     font_size=9.0,
+                    overlay_rect=(154, 525, 562, 539),
                 ),
-                PdfFieldDef("data_modulo", "Testo6", "Data", "GG/MM/AAAA", default=_DYNAMIC_DEFAULT_TODAY),
+                PdfFieldDef("data_modulo", "Testo6", "Data", "GG/MM/AAAA", default=_DYNAMIC_DEFAULT_TODAY, overlay_rect=(28, 794, 147, 816)),
             ),
         ),
     ),
@@ -1773,8 +1849,9 @@ def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_pa
     doc = fitz_mod.open(template_path)
     doc.need_appearances(True)
     seen_widgets: set[str] = set()
+    seen_overlays: set[str] = set()
     try:
-        for page in doc:
+        for page_index, page in enumerate(doc):
             for widget in page.widgets() or []:
                 field = field_map.get(widget.field_name)
                 if field is None:
@@ -1787,7 +1864,26 @@ def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_pa
                 widget.update()
                 seen_widgets.add(widget.field_name)
 
-        missing_widgets = sorted(set(field_map) - seen_widgets)
+            for field in iter_pdf_fields(spec):
+                if field.widget in seen_widgets:
+                    continue
+                if field.overlay_rect is None or field.overlay_page != page_index:
+                    continue
+                field_value = sanitize_pdf_text(values.get(field.name, ""))
+                if not field_value:
+                    seen_overlays.add(field.widget)
+                    continue
+                rect = fitz_mod.Rect(*field.overlay_rect)
+                page.insert_text(
+                    fitz_mod.Point(rect.x0 + 2, rect.y1 - 3),
+                    field_value,
+                    fontname="helv",
+                    fontsize=field.font_size,
+                    color=(0, 0, 0),
+                )
+                seen_overlays.add(field.widget)
+
+        missing_widgets = sorted(set(field_map) - seen_widgets - seen_overlays)
         if missing_widgets:
             raise RuntimeError(
                 "Nel template PDF mancano alcuni widget attesi: " + ", ".join(missing_widgets)
@@ -1825,6 +1921,9 @@ class DocumentTypeDef:
     key: str
     label: str
     keywords: tuple[str, ...]
+    description: str = ""
+    helper_text: str = ""
+    user_selectable: bool = False
 
 
 @dataclass
@@ -1891,7 +1990,22 @@ _TESSERACT_CANDIDATE_PATHS = (
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     str(Path.home() / "AppData" / "Local" / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
 )
-_LOCAL_RUNTIME_TEMP_DIR = Path(__file__).resolve().parent / ".quintoquote_tmp"
+_LOCAL_RUNTIME_TEMP_DIR = _default_runtime_temp_dir()
+
+
+def _iter_bundle_runtime_roots() -> list[Path]:
+    roots: list[Path] = []
+    for candidate in (
+        getattr(sys, "_MEIPASS", ""),
+        Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None,
+        Path(__file__).resolve().parent,
+    ):
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists() and path not in roots:
+            roots.append(path)
+    return roots
 
 CASE_FIELD_DEFS = (
     CaseFieldDef("full_name", "Nome e cognome", "anagrafica", "Es. Mario Rossi"),
@@ -1912,7 +2026,7 @@ CASE_FIELD_DEFS = (
     CaseFieldDef("email", "Email", "contatti", "Es. nome@pec.it"),
     CaseFieldDef("service_office", "In servizio presso", "lavoro", "Es. I.C. Faenza San Rocco"),
     CaseFieldDef("employer_entity", "Ente di appartenenza", "lavoro", "Es. Ministero dell'Istruzione"),
-    CaseFieldDef("lender_name", "Istituto / finanziaria", "finanza", "Es. Bibanca S.p.A."),
+    CaseFieldDef("lender_name", "Istituto / finanziaria", "finanza", "Es. Istituto delegatario"),
     CaseFieldDef("iban", "IBAN istituto delegatario", "bancario", "Es. IT60X0542811101000000123456"),
     CaseFieldDef("borrower_iban", "IBAN personale / accredito stipendio", "bancario", "Es. IT60X0542811101000000123456"),
     CaseFieldDef("loan_amount", "Importo finanziamento", "finanza", "Es. 30.000,00"),
@@ -1943,13 +2057,47 @@ _CASE_CATEGORY_LABELS = {
 }
 
 DOCUMENT_TYPE_DEFS = (
-    DocumentTypeDef("cedolino_noipa", "Cedolino NoiPA / MEF", ("noipa", "cedolino", "id cedolino", "anagrafica del dipendente", "ufficio servizio")),
-    DocumentTypeDef("contratto_finanziamento", "Contratto finanziamento", ("informazioni europee di base sul credito ai consumatori", "prestito con delegazione di pagamento", "numero rate mensili da pagare", "importo rata mensile")),
+    DocumentTypeDef(
+        "cedolino_noipa",
+        "Busta paga NoiPA",
+        ("noipa", "cedolino", "id cedolino", "anagrafica del dipendente", "ufficio servizio"),
+        "Estrae anagrafica lavorativa, ente, partita stipendiale, quinto cedibile e coordinate presenti nel cedolino.",
+        "Meglio PDF testuale; se carichi una scansione usa OCR locale.",
+        True,
+    ),
+    DocumentTypeDef(
+        "contratto_finanziamento",
+        "Contratto di finanziamento",
+        ("informazioni europee di base sul credito ai consumatori", "prestito con delegazione di pagamento", "numero rate mensili da pagare", "importo rata mensile", "tasso annuo effettivo globale"),
+        "Estrae i dati del prestito e del richiedente dal contratto.",
+        "Su alcuni layout i dati principali si trovano nelle pagine interne, spesso attorno a pagina 5.",
+        True,
+    ),
+    DocumentTypeDef(
+        "carta_identita",
+        "Carta di identità",
+        ("carta d'identità", "carta di identita", "repubblica italiana", "luogo di nascita", "cognome"),
+        "Estrae nome, cognome, luogo e data di nascita e altri dati leggibili dal documento.",
+        "Funziona meglio con scansione o foto nitida del documento completo.",
+        True,
+    ),
+    DocumentTypeDef(
+        "tessera_sanitaria",
+        "Tessera sanitaria",
+        ("tessera sanitaria", "codice fiscale", "tessera europea", "cognome", "nome"),
+        "Estrae soprattutto codice fiscale e dati anagrafici di base.",
+        "Meglio foto o scansione nitida della tessera completa.",
+        True,
+    ),
     DocumentTypeDef("documento_finanziario", "Documento finanziario", ("tan", "taeg", "importo erogato", "importo globale ceduto", "montante", "totale da rimborsare", "durata", "rata")),
     DocumentTypeDef("documento_anagrafico", "Documento anagrafico", ("codice fiscale", "data di nascita", "nato", "residente", "cognome")),
     DocumentTypeDef("coordinate_bancarie", "Coordinate bancarie", ("iban", "conto corrente", "istituto delegatario")),
     DocumentTypeDef("modulo_mef", "Modulo MEF", ("allegato e", "allegato c", "partita stipendiale")),
 )
+
+_DOCUMENT_TYPE_DEF_MAP = {doc_type.key: doc_type for doc_type in DOCUMENT_TYPE_DEFS}
+_DOSSIER_UPLOAD_DOCUMENT_TYPES = tuple(doc_type for doc_type in DOCUMENT_TYPE_DEFS if doc_type.user_selectable)
+_DOSSIER_UPLOAD_DOCUMENT_KEYS = {doc_type.key for doc_type in _DOSSIER_UPLOAD_DOCUMENT_TYPES}
 
 FIELD_PATTERNS: dict[str, tuple[str, ...]] = {
     "full_name": (
@@ -2077,7 +2225,9 @@ FIELD_PATTERNS: dict[str, tuple[str, ...]] = {
 _DOC_CATEGORY_PRIORITY = {
     "documento_anagrafico": {"anagrafica": 95, "residenza": 92, "contatti": 70, "lavoro": 40, "finanza": 20, "bancario": 10},
     "cedolino_noipa": {"anagrafica": 72, "residenza": 35, "contatti": 25, "lavoro": 96, "finanza": 45, "bancario": 10},
-    "contratto_finanziamento": {"anagrafica": 20, "residenza": 10, "contatti": 10, "lavoro": 15, "finanza": 98, "bancario": 25},
+    "contratto_finanziamento": {"anagrafica": 68, "residenza": 64, "contatti": 56, "lavoro": 62, "finanza": 98, "bancario": 40},
+    "carta_identita": {"anagrafica": 98, "residenza": 78, "contatti": 10, "lavoro": 5, "finanza": 5, "bancario": 5},
+    "tessera_sanitaria": {"anagrafica": 99, "residenza": 5, "contatti": 5, "lavoro": 5, "finanza": 5, "bancario": 5},
     "documento_finanziario": {"anagrafica": 35, "residenza": 15, "contatti": 20, "lavoro": 25, "finanza": 96, "bancario": 85},
     "coordinate_bancarie": {"anagrafica": 10, "residenza": 10, "contatti": 25, "lavoro": 10, "finanza": 45, "bancario": 98},
     "modulo_mef": {"anagrafica": 85, "residenza": 82, "contatti": 65, "lavoro": 88, "finanza": 88, "bancario": 90},
@@ -2117,9 +2267,34 @@ def find_tesseract_executable() -> str:
     resolved = shutil.which("tesseract")
     if resolved:
         candidates.append(resolved)
+    for root in _iter_bundle_runtime_roots():
+        candidates.extend(
+            [
+                str(root / "tesseract.exe"),
+                str(root / "tesseract" / "tesseract.exe"),
+                str(root / "Tesseract-OCR" / "tesseract.exe"),
+                str(root / "vendor" / "tesseract" / "tesseract.exe"),
+                str(root / "ocr" / "tesseract.exe"),
+            ]
+        )
     candidates.extend(_TESSERACT_CANDIDATE_PATHS)
     for candidate in candidates:
         if candidate and Path(candidate).exists():
+            return str(candidate)
+    return ""
+
+
+def find_tesseract_data_dir(tesseract_cmd: Optional[str] = None) -> str:
+    executable = Path(tesseract_cmd or find_tesseract_executable())
+    if not executable.exists():
+        return ""
+    candidates = [
+        executable.parent / "tessdata",
+        executable.parent.parent / "tessdata",
+        executable.parent / "ocr" / "tessdata",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
             return str(candidate)
     return ""
 
@@ -2245,14 +2420,14 @@ def _extract_cedolino_noipa_fields(text: str) -> dict[str, str]:
     return fields
 
 
-def _looks_like_bibanca_contract(text: str) -> bool:
+def _looks_like_standard_financing_contract(text: str) -> bool:
     haystack = text.lower()
     anchors = (
         "informazioni europee di base sul credito ai consumatori",
-        "bibanca",
         "prestito con delegazione di pagamento",
         "numero rate mensili da pagare",
         "importo rata mensile",
+        "tasso annuo effettivo globale",
     )
     return sum(1 for anchor in anchors if anchor in haystack) >= 4
 
@@ -2299,7 +2474,7 @@ def _search_row_group(
     return ""
 
 
-def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, str]:
+def _extract_standard_financing_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, str]:
     fitz_mod = require_pymupdf()
     doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
     try:
@@ -2308,8 +2483,6 @@ def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, s
         summary_page = doc[0]
         summary_text = _normalize_search_text(summary_page.get_text("text"))
         lender_name = _search_first_group(r"(?im)^Finanziatore\s*(?:\n\s*)?([^\n]+)$", summary_text, flags=re.IGNORECASE | re.MULTILINE)
-        if not lender_name and "bibanca" in text.lower():
-            lender_name = "Bibanca S.p.A."
         lender_name = _clean_extracted_value("lender_name", lender_name)
         if lender_name and not _reject_extracted_value("lender_name", lender_name):
             fields["lender_name"] = lender_name
@@ -2411,11 +2584,95 @@ def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, s
         doc.close()
 
 
-def _extract_specialized_document_fields(filename: str, pdf_bytes: bytes, normalized_text: str) -> tuple[Optional[str], Optional[str], dict[str, str]]:
+def _looks_like_carta_identita(text: str) -> bool:
+    haystack = text.lower()
+    anchors = (
+        "carta d'identità",
+        "carta di identita",
+        "repubblica italiana",
+        "luogo di nascita",
+        "cognome",
+        "nome",
+    )
+    return sum(1 for anchor in anchors if anchor in haystack) >= 2 and ("cognome" in haystack or "nome" in haystack)
+
+
+def _extract_carta_identita_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    surname = _search_first_group(r"(?im)^\s*cognome\s*[:\-]?\s*([^\n]{2,80})$", text)
+    name = _search_first_group(r"(?im)^\s*nome\s*[:\-]?\s*([^\n]{2,80})$", text)
+    full_name = _normalize_person_name(surname, name)
+    if full_name and not _reject_extracted_value("full_name", full_name):
+        fields["full_name"] = full_name
+
+    for field_name in (
+        "birth_place",
+        "birth_date",
+        "birth_province_name",
+        "birth_province_code",
+        "tax_code",
+        "residence_city",
+        "residence_province_name",
+        "residence_province_code",
+        "residence_cap",
+        "residence_street",
+    ):
+        value = _extract_first_pattern_value(field_name, text)
+        if value:
+            fields[field_name] = value
+    return fields
+
+
+def _looks_like_tessera_sanitaria(text: str) -> bool:
+    haystack = text.lower()
+    anchors = (
+        "tessera sanitaria",
+        "codice fiscale",
+        "tessera europea",
+        "cognome",
+        "nome",
+    )
+    return sum(1 for anchor in anchors if anchor in haystack) >= 2 and ("codice fiscale" in haystack or re.search(r"\b[A-Z0-9]{16}\b", text) is not None)
+
+
+def _extract_tessera_sanitaria_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    surname = _search_first_group(r"(?im)^\s*cognome\s*[:\-]?\s*([^\n]{2,80})$", text)
+    name = _search_first_group(r"(?im)^\s*nome\s*[:\-]?\s*([^\n]{2,80})$", text)
+    full_name = _normalize_person_name(surname, name)
+    if full_name and not _reject_extracted_value("full_name", full_name):
+        fields["full_name"] = full_name
+
+    for field_name in ("tax_code", "birth_date", "birth_place"):
+        value = _extract_first_pattern_value(field_name, text)
+        if value:
+            fields[field_name] = value
+    return fields
+
+
+def _extract_specialized_document_fields(
+    filename: str,
+    pdf_bytes: bytes,
+    normalized_text: str,
+    forced_document_key: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], dict[str, str]]:
+    if forced_document_key == "cedolino_noipa":
+        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_cedolino_noipa_fields(normalized_text)
+    if forced_document_key == "contratto_finanziamento" and _is_pdf_dossier_file(filename):
+        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_standard_financing_contract_fields(pdf_bytes, normalized_text)
+    if forced_document_key == "carta_identita":
+        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_carta_identita_fields(normalized_text)
+    if forced_document_key == "tessera_sanitaria":
+        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_tessera_sanitaria_fields(normalized_text)
+
     if _looks_like_cedolino_noipa(normalized_text):
-        return "cedolino_noipa", "Cedolino NoiPA / MEF", _extract_cedolino_noipa_fields(normalized_text)
-    if _looks_like_bibanca_contract(normalized_text):
-        return "contratto_finanziamento", "Contratto finanziamento", _extract_bibanca_contract_fields(pdf_bytes, normalized_text)
+        return "cedolino_noipa", _DOCUMENT_TYPE_DEF_MAP["cedolino_noipa"].label, _extract_cedolino_noipa_fields(normalized_text)
+    if _is_pdf_dossier_file(filename) and _looks_like_standard_financing_contract(normalized_text):
+        return "contratto_finanziamento", _DOCUMENT_TYPE_DEF_MAP["contratto_finanziamento"].label, _extract_standard_financing_contract_fields(pdf_bytes, normalized_text)
+    if _looks_like_carta_identita(normalized_text):
+        return "carta_identita", _DOCUMENT_TYPE_DEF_MAP["carta_identita"].label, _extract_carta_identita_fields(normalized_text)
+    if _looks_like_tessera_sanitaria(normalized_text):
+        return "tessera_sanitaria", _DOCUMENT_TYPE_DEF_MAP["tessera_sanitaria"].label, _extract_tessera_sanitaria_fields(normalized_text)
     return None, None, {}
 
 
@@ -2541,6 +2798,7 @@ def _run_tesseract_ocr(input_path: Path) -> str:
         raise RuntimeError(
             "OCR non disponibile: installa Tesseract OCR oppure imposta QUINTOQUOTE_TESSERACT_PATH."
         )
+    tessdata_dir = find_tesseract_data_dir(tesseract_cmd)
 
     attempts = (
         ("ita+eng", "6"),
@@ -2552,6 +2810,8 @@ def _run_tesseract_ocr(input_path: Path) -> str:
     errors: list[str] = []
     for language, psm in attempts:
         command = [tesseract_cmd, str(input_path), "stdout", "--psm", psm, "--oem", "1"]
+        if tessdata_dir:
+            command.extend(["--tessdata-dir", tessdata_dir])
         if language:
             command.extend(["-l", language])
         completed = subprocess.run(
@@ -2785,45 +3045,74 @@ def _classify_document_text(text: str, filename: str) -> tuple[str, str, int]:
     return best_key, best_label, best_hits
 
 
-def extract_document_result(filename: str, raw_bytes: bytes) -> DocumentExtractionResult:
+def _count_document_keyword_hits(text: str, filename: str, document_key: str) -> int:
+    doc_type = _DOCUMENT_TYPE_DEF_MAP.get(document_key)
+    if doc_type is None:
+        return 0
+    haystack = f"{filename}\n{text}".lower()
+    return sum(1 for keyword in doc_type.keywords if keyword in haystack)
+
+
+def extract_document_result(filename: str, raw_bytes: bytes, expected_document_key: str = "") -> DocumentExtractionResult:
     text, page_count, warnings = _extract_text_from_supported_document(filename, raw_bytes)
     normalized = _normalize_search_text(text)
-    document_key, document_label, keyword_hits = _classify_document_text(normalized, filename)
+    detected_key, detected_label, detected_hits = _classify_document_text(normalized, filename)
+    expected_document_key = sanitize_pdf_text(expected_document_key)
+    expected_document_type = _DOCUMENT_TYPE_DEF_MAP.get(expected_document_key)
+    document_key = expected_document_type.key if expected_document_type else detected_key
+    document_label = expected_document_type.label if expected_document_type else detected_label
+    keyword_hits = _count_document_keyword_hits(normalized, filename, document_key) if expected_document_type else detected_hits
     extracted: dict[str, str] = {}
     widget_key = widget_label = special_key = special_label = None
     widget_fields: dict[str, str] = {}
     special_fields: dict[str, str] = {}
-    if _is_pdf_dossier_file(filename):
+    if _is_pdf_dossier_file(filename) and not expected_document_type:
         widget_values = _safe_pdf_widget_values_from_bytes(raw_bytes)
         widget_key, widget_label, widget_fields = _extract_known_template_fields_from_widgets(widget_values)
-        special_key, special_label, special_fields = _extract_specialized_document_fields(filename, raw_bytes, normalized)
-    skip_text_fallback = False
+    special_key, special_label, special_fields = _extract_specialized_document_fields(
+        filename,
+        raw_bytes,
+        normalized,
+        forced_document_key=document_key if expected_document_type else None,
+    )
+
     if widget_fields:
         extracted.update(widget_fields)
-        document_key = widget_key or document_key
-        document_label = widget_label or document_label
-        skip_text_fallback = True
-    elif special_fields:
+        if not expected_document_type:
+            document_key = widget_key or document_key
+            document_label = widget_label or document_label
+    if special_fields:
         extracted.update(special_fields)
-        document_key = special_key or document_key
-        document_label = special_label or document_label
-        skip_text_fallback = True
+        if not expected_document_type:
+            document_key = special_key or document_key
+            document_label = special_label or document_label
 
     expression_fields = _extract_rate_duration_expression_fields(normalized)
     if expression_fields:
         for field_name, value in expression_fields.items():
             extracted.setdefault(field_name, value)
-        if document_key == "documento_generico":
+        if not expected_document_type and document_key == "documento_generico":
             document_key = "documento_finanziario"
             document_label = "Documento finanziario"
 
-    if not skip_text_fallback:
-        for field in CASE_FIELD_DEFS:
-            if field.name in extracted:
-                continue
-            value = _extract_first_pattern_value(field.name, normalized)
-            if value:
-                extracted[field.name] = value
+    for field in CASE_FIELD_DEFS:
+        if field.name in extracted:
+            continue
+        value = _extract_first_pattern_value(field.name, normalized)
+        if value:
+            extracted[field.name] = value
+
+    if expected_document_type and page_count < 5 and document_key == "contratto_finanziamento":
+        warnings.append("Per i contratti completi servono anche le pagine interne: su alcuni layout i dati principali sono attorno a pagina 5.")
+
+    if expected_document_type and detected_key not in {document_key, "documento_generico"} and detected_hits >= max(2, keyword_hits + 1):
+        warnings.append(
+            f"Il file è stato caricato come {document_label}, ma il contenuto assomiglia di più a {detected_label.lower()}."
+        )
+    elif expected_document_type and keyword_hits == 0 and len(extracted) < 2:
+        warnings.append(
+            f"Il file è stato trattato come {document_label}, ma contiene pochi indicatori tipici di questa tipologia."
+        )
 
     if not extracted:
         warnings.append("Nessun campo utile estratto con le regole disponibili.")
@@ -3913,6 +4202,7 @@ def run_web(
           <a href="/moduli" class="{{ 'active' if page == 'modules' }}">📎 Moduli</a>
           <a href="/storico" class="{{ 'active' if page == 'history' }}">📂 Storico</a>
           <a href="/impostazioni" class="{{ 'active' if page == 'settings' }}">⚙️ Impostazioni</a>
+          {% if desktop_app %}<a href="/esci">⏻ Chiudi App</a>{% endif %}
         </nav>
 
         {{ content|safe }}
@@ -4501,13 +4791,14 @@ def run_web(
     <div class="card">
       <div class="section-title">🗂️ Dossier Documenti</div>
       <div class="info-banner">
-        Engine deterministico, senza AI: accetta <strong>PDF, JPG e PNG</strong>, classifica i file con parole chiave
-        ed estrae i campi con regex, anchor text, parser dedicati e OCR locale quando disponibile. Al momento e forte soprattutto su
-        <strong>cedolino NoiPA/MEF</strong> e <strong>contratto di finanziamento/delega</strong> in PDF testuale.
+        Engine deterministico, senza AI: accetta <strong>PDF, JPG e PNG</strong>, estrae i campi con regex, anchor text,
+        parser dedicati e OCR locale quando disponibile. Per aumentare l'affidabilita, ogni upload richiede la
+        <strong>tipologia documento</strong>.
         {{ ocr_status_message }}
       </div>
       <div class="helper-text" style="margin:12px 0 18px">
-        Puoi costruire il dossier poco alla volta: aggiungi un documento adesso, un altro dopo, salva la revisione e continua finché non premi <strong>Nuova analisi</strong>.
+        Puoi costruire il dossier poco alla volta: scegli una tipologia, carica un documento, poi un altro tipo documento, salva la revisione
+        e continua finché non premi <strong>Nuova analisi</strong>.
       </div>
 
       {% if notice %}
@@ -4524,9 +4815,27 @@ def run_web(
 
       <form method="post" action="/dossier" enctype="multipart/form-data">
         <div class="upload-panel">
-          <strong>Carica i documenti sorgente</strong>
+          <strong>1. Scegli la tipologia documento</strong>
           <div class="helper-text">
-            Esempi utili: cedolino NoiPA, contratto o preventivo finanziario, modulo gia compilato, documento anagrafico, screenshot o scansione.
+            Per ogni upload scegli una sola tipologia e carica uno o piu file dello stesso tipo.
+          </div>
+          <div class="module-grid" style="margin-top:14px">
+            {% for doc_type in upload_document_types %}
+            <label class="module-card" style="cursor:pointer;border:1px solid {{ 'rgba(201,162,39,.55)' if selected_document_key == doc_type.key else 'rgba(255,255,255,.08)' }};box-shadow:{{ '0 0 0 1px rgba(201,162,39,.28) inset' if selected_document_key == doc_type.key else 'none' }};">
+              <div style="display:flex;gap:12px;align-items:flex-start">
+                <input type="radio" name="document_type" value="{{ doc_type.key }}" {% if selected_document_key == doc_type.key %}checked{% endif %} style="margin-top:4px;accent-color:var(--accent-light)" />
+                <div>
+                  <h3 style="margin:0 0 8px">{{ doc_type.label }}</h3>
+                  <p style="margin:0 0 8px">{{ doc_type.description }}</p>
+                  <div class="helper-text">{{ doc_type.helper_text }}</div>
+                </div>
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+          <strong style="display:block;margin-top:18px">2. Carica i documenti sorgente</strong>
+          <div class="helper-text">
+            Se vuoi analizzare tipi diversi, aggiungili in passaggi separati: ad esempio prima il contratto, poi la tessera sanitaria.
           </div>
           <input type="file" name="documenti" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg" multiple {% if not results %}required{% endif %}/>
         </div>
@@ -4550,6 +4859,7 @@ def run_web(
               <div class="dossier-badges">
                 <span>{{ result.page_count }} pag.</span>
                 <span>{{ result.text_length }} caratteri</span>
+                <span>{{ result.keyword_hits }} indicatori</span>
                 <span>{{ result.extracted_fields|length }} campi</span>
               </div>
             </div>
@@ -4683,6 +4993,7 @@ def run_web(
         kwargs.setdefault("prof_rete", prof.rete_mandante)
         kwargs.setdefault("prof_oam", prof.codice_oam)
         kwargs.setdefault("prof_tel", prof.telefono)
+        kwargs.setdefault("desktop_app", _is_frozen_runtime())
         content_html = render_template_string(content_tpl, **kwargs)
         scripts_html = render_template_string(scripts_tpl, **kwargs) if scripts_tpl else ""
         return render_template_string(BASE_HTML, content=content_html, scripts=scripts_html, **kwargs)
@@ -4730,11 +5041,21 @@ def run_web(
             clear_dossier_state(state_id)
         session.pop("dossier_state_id", None)
 
+    def get_last_dossier_document_type() -> str:
+        document_key = sanitize_pdf_text(session.get("dossier_last_document_type", ""))
+        return document_key if document_key in _DOSSIER_UPLOAD_DOCUMENT_KEYS else ""
+
+    def set_last_dossier_document_type(document_key: str) -> None:
+        clean_key = sanitize_pdf_text(document_key)
+        if clean_key in _DOSSIER_UPLOAD_DOCUMENT_KEYS:
+            session["dossier_last_document_type"] = clean_key
+
     def render_dossier_page(
         results: Optional[list[DocumentExtractionResult]] = None,
         manual_values: Optional[dict[str, str]] = None,
         error: str = "",
         notice: str = "",
+        selected_document_key: str = "",
     ):
         reviewed_fields = merge_reviewed_case_fields(results or [], manual_values or {})
         return render_page(
@@ -4744,6 +5065,8 @@ def run_web(
             results=results or [],
             aggregated_fields=reviewed_fields,
             review_sections=build_review_sections(reviewed_fields),
+            upload_document_types=_DOSSIER_UPLOAD_DOCUMENT_TYPES,
+            selected_document_key=selected_document_key or get_last_dossier_document_type(),
             ocr_status_message=get_ocr_status_message(),
             error=error,
             notice=notice,
@@ -5029,12 +5352,21 @@ def run_web(
     def dossier_post():
         existing_results, manual_values = load_current_dossier_state()
         manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        selected_document_key = sanitize_pdf_text(request.form.get("document_type", ""))
         uploaded_files = [file for file in request.files.getlist("documenti") if file and file.filename]
         if not uploaded_files:
             return render_dossier_page(
                 results=existing_results,
                 manual_values=manual_values,
                 error="Carica almeno un PDF, JPG o PNG da analizzare.",
+                selected_document_key=selected_document_key,
+            ), 400
+        if selected_document_key not in _DOSSIER_UPLOAD_DOCUMENT_KEYS:
+            return render_dossier_page(
+                results=existing_results,
+                manual_values=manual_values,
+                error="Seleziona la tipologia documento prima di analizzare il file.",
+                selected_document_key=selected_document_key,
             ), 400
 
         new_results: list[DocumentExtractionResult] = []
@@ -5049,18 +5381,25 @@ def run_web(
                 errors.append(f"{safe_name}: file vuoto.")
                 continue
             try:
-                new_results.append(extract_document_result(safe_name, data))
+                new_results.append(extract_document_result(safe_name, data, expected_document_key=selected_document_key))
             except Exception as exc:
                 errors.append(f"{safe_name}: {exc}")
 
         if not new_results and errors and not existing_results:
-            return render_dossier_page(error=" ".join(errors)), 400
+            return render_dossier_page(error=" ".join(errors), selected_document_key=selected_document_key), 400
 
         all_results = existing_results + new_results
         save_current_dossier_state(all_results, manual_values)
+        set_last_dossier_document_type(selected_document_key)
         error_text = " ".join(errors) if errors else ""
         notice = f"Dossier aggiornato: {len(all_results)} documenti analizzati." if new_results else ""
-        return render_dossier_page(results=all_results, manual_values=manual_values, error=error_text, notice=notice)
+        return render_dossier_page(
+            results=all_results,
+            manual_values=manual_values,
+            error=error_text,
+            notice=notice,
+            selected_document_key=selected_document_key,
+        )
 
     @app.post("/dossier/review")
     def dossier_review_post():
@@ -5421,6 +5760,19 @@ def run_web(
             return "File non trovato", 404
         return send_file(fpath)
 
+    @app.get("/esci")
+    def app_exit():
+        if not _is_frozen_runtime():
+            return redirect(url_for("home"))
+        threading.Timer(0.4, lambda: os._exit(0)).start()
+        return (
+            "<html><head><meta charset='utf-8'><title>QuintoQuote</title></head>"
+            "<body style='font-family:Segoe UI,Arial,sans-serif;padding:32px;background:#0f172a;color:#e5e7eb'>"
+            "<h2 style='margin-top:0'>QuintoQuote si sta chiudendo...</h2>"
+            "<p>Puoi chiudere anche questa scheda del browser.</p>"
+            "</body></html>"
+        )
+
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     app_url = f"http://{display_host}:{port}"
     if open_browser:
@@ -5457,7 +5809,7 @@ def main():
     ap.add_argument("--config-path", default="", help="Percorso del file config JSON da usare.")
     ap.add_argument("--assets-dir", default="", help="Cartella assets da usare per upload logo/bollino.")
 
-    ap.add_argument("--out-dir", default="output_preventivi", help="Cartella di output PDF.")
+    ap.add_argument("--out-dir", default=str(_default_output_dir()), help="Cartella di output PDF.")
     ap.add_argument("--non-interactive", action="store_true", help="Non chiedere input: usa solo gli argomenti.")
 
     # argomenti (facoltativi in interattivo, obbligatori in non-interactive)
@@ -5496,10 +5848,11 @@ def main():
 
     try:
         if args.web:
+            selected_port = _pick_available_port(args.host, args.port) if (used_start_alias or _is_frozen_runtime()) else args.port
             run_web(
                 out_dir,
                 host=args.host,
-                port=args.port,
+                port=selected_port,
                 open_browser=used_start_alias,
                 show_start_hint=not used_start_alias,
             )

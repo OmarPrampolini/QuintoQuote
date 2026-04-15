@@ -41,6 +41,77 @@ Compili il form. Scarichi il PDF. Fine.
 
 ---
 
+## Build EXE Windows
+
+Per generare il pacchetto desktop Windows dal repository locale:
+
+```powershell
+cd C:\Users\pramp\Downloads\QuintoQuote
+.\build_exe.ps1 -Clean
+```
+
+Output:
+- `dist\QuintoQuote\QuintoQuote.exe`
+- `dist\QuintoQuote-portable.zip`
+
+La build include:
+- eseguibile desktop con avvio diretto della web UI
+- template PDF presenti in `docs/`
+- bundle OCR locale in `dist\QuintoQuote\ocr\`
+- salvataggio dati utente in `%LOCALAPPDATA%\QuintoQuote`
+
+---
+
+## Uso EXE Windows
+
+Se vuoi usare QuintoQuote come programma Windows:
+
+1. estrai `QuintoQuote-portable.zip` oppure apri la cartella `dist\QuintoQuote`
+2. avvia `QuintoQuote.exe` con doppio click
+3. il browser si apre automaticamente sulla web UI locale
+4. lavori normalmente da interfaccia web, ma senza dover installare Python
+
+Comportamento del file `.exe`:
+- avvia direttamente la UI locale anche senza parametri
+- sceglie una porta libera automaticamente se la `5000` e gia occupata
+- include OCR locale bundle-friendly
+- mostra `Chiudi App` nella barra di navigazione per terminare il programma in modo esplicito
+
+Percorsi usati dalla versione `.exe`:
+- configurazione: `%LOCALAPPDATA%\QuintoQuote\config.json`
+- immagini utente: `%LOCALAPPDATA%\QuintoQuote\assets\`
+- PDF generati: `%LOCALAPPDATA%\QuintoQuote\output_preventivi\`
+- file temporanei: `%LOCALAPPDATA%\QuintoQuote\.quintoquote_tmp\`
+
+Consiglio pratico:
+- non lanciare l'app da dentro cartelle protette o di sistema
+- lascia `QuintoQuote.exe` insieme alla cartella `ocr` e alla cartella `_internal`
+- se distribuisci il pacchetto a terzi, distribuisci sempre l'intera cartella o lo ZIP completo
+
+---
+
+## GitHub Actions
+
+Il repository include una pipeline Windows pronta in:
+
+- `.github/workflows/build-windows-exe.yml`
+
+Cosa fa:
+- installa Python
+- installa le dipendenze del progetto
+- installa Tesseract OCR sul runner Windows
+- genera `QuintoQuote.exe`
+- crea `QuintoQuote-portable.zip`
+- carica gli artefatti su GitHub Actions
+- se apri una Release GitHub, allega automaticamente lo ZIP alla release
+
+Flusso consigliato:
+1. fai push su `main` per ottenere gli artifact nella tab `Actions`
+2. crea una Release GitHub quando vuoi pubblicare una build stabile
+3. scarica `QuintoQuote-portable.zip` direttamente dalla Release o dagli artifact del workflow
+
+---
+
 ## Il risultato
 
 | Pagina 1 | Pagina 2 |
@@ -118,7 +189,8 @@ Nella web UI trovi anche la sezione **Dossier**.
 
 - Accetta piu PDF testuali caricati insieme
 - Accetta anche screenshot e scansioni in JPG/PNG tramite OCR locale
-- Classifica i file con parole chiave, senza AI
+- Richiede la scelta della tipologia documento per ogni upload: `Busta paga NoiPA`, `Contratto di finanziamento`, `Carta di identità`, `Tessera sanitaria`
+- Usa parser e regole dedicati per la tipologia scelta, senza AI
 - Estrae i campi con regex e anchor text
 - Permette analisi incrementale: aggiungi un documento, poi un altro, poi salvi la revisione e continui sullo stesso dossier
 - Mostra i dati estratti in una schermata di revisione, modificabili prima del prefill
@@ -127,7 +199,7 @@ Nella web UI trovi anche la sezione **Dossier**.
 - Usa Tesseract OCR in locale come fallback sui PDF scannerizzati e come parser principale per immagini
 - Riconosce anche pattern sintetici OCR tipo `300 euro x 120 mesi` come possibile `rata` + `durata`, con montante derivato automaticamente
 
-Nota: per OCR serve `tesseract.exe` installato sul PC. Se non e in `PATH`, puoi indicarlo con la variabile d'ambiente `QUINTOQUOTE_TESSERACT_PATH`.
+Nota: per OCR serve `tesseract.exe`. In sviluppo puo stare nel sistema o in `PATH`; in ottica `.exe` il runtime cerca anche copie locali bundle-friendly vicino all'applicazione.
 
 ---
 
@@ -163,6 +235,18 @@ irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps
 ```
 
 Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package e avvia QuintoQuote.
+
+### Quando usare installazione Python e quando usare EXE
+
+Usa la versione Python se:
+- stai sviluppando il progetto
+- vuoi modificare il codice
+- vuoi usare la CLI o fare build locali
+
+Usa la versione `.exe` se:
+- vuoi semplicemente lavorare
+- vuoi distribuire QuintoQuote su PC Windows senza Python
+- vuoi un avvio diretto, piu semplice e piu vicino a un programma desktop classico
 
 ### Requisiti
 
@@ -211,15 +295,45 @@ QuintoQuote start --port 5010
 python quintoquote.py start
 ```
 
+### Dove finiscono i file nella versione Python
+
+Per default:
+- config: `config.json` nella root del progetto
+- assets: cartella `assets/`
+- output PDF: cartella `output_preventivi/`
+- temporanei OCR: cartella `.quintoquote_tmp/`
+
 ---
 
 ## Uso da CLI
+
+### Avvio web locale da CLI
+
+```powershell
+quintoquote start
+```
+
+oppure:
+
+```powershell
+.venv\Scripts\python -m preventivo_generator_v2 start
+```
+
+Per usare cartelle personalizzate:
+
+```powershell
+quintoquote start --port 5010 --config-path C:\QuintoQuote\config.json --assets-dir C:\QuintoQuote\assets --out-dir C:\QuintoQuote\output
+```
+
+### CLI guidata
 
 CLI guidata:
 
 ```bash
 python quintoquote.py
 ```
+
+### CLI non interattiva
 
 CLI non interattiva:
 
@@ -252,6 +366,49 @@ python quintoquote.py --non-interactive \
 
 Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento]`
 
+### Uso pratico consigliato
+
+- per il lavoro quotidiano usa la web UI
+- usa la CLI non interattiva quando vuoi integrazione, script o automazioni locali
+- usa i `--scenario` se vuoi produrre un unico PDF con piu opzioni di rata/durata
+- usa il Dossier dalla web UI quando devi estrarre dati da documenti e precompilare Allegato E/C
+
+### Esempi utili
+
+Avvio su porta diversa:
+
+```powershell
+quintoquote start --port 5055
+```
+
+Generazione PDF con output personalizzato:
+
+```powershell
+python quintoquote.py --non-interactive ^
+  --cliente "Mario Rossi" ^
+  --data-nascita "15/05/1975" ^
+  --tipo-lavoro "Dipendente Statale" ^
+  --provincia "Milano" ^
+  --tipo-finanziamento "Cessione del Quinto" ^
+  --importo-rata 350 ^
+  --durata-mesi 120 ^
+  --tan 4.5 ^
+  --taeg 4.75 ^
+  --importo-erogato 30000 ^
+  --out-dir "C:\Preventivi"
+```
+
+---
+
+## Risoluzione problemi
+
+- Se il browser non si apre, copia a mano l'indirizzo mostrato nella console o nel processo di avvio.
+- Se la porta `5000` e occupata, la versione `.exe` prova automaticamente una porta successiva.
+- Se l'OCR non legge bene uno screenshot, usa immagini piu nitide e piu grandi.
+- Se un documento non viene riconosciuto bene nel Dossier, scegli sempre la tipologia corretta prima dell'upload.
+- Se Allegato C non ha campi compilabili nativi, QuintoQuote usa un fallback a coordinate sul modulo.
+- Se distribuisci l'app, non separare `QuintoQuote.exe` dalla sua cartella `ocr`.
+
 ---
 
 ## Roadmap
@@ -260,7 +417,8 @@ Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento
 - [ ] Template PDF aggiuntivi
 - [ ] Export scenari comparativo
 - [ ] Configurazioni branding avanzate
-- [ ] Packaging per distribuzione standalone
+- [x] Packaging per distribuzione standalone Windows
+- [ ] Firma digitale del binario Windows
 
 ---
 
