@@ -41,12 +41,31 @@ Compili il form. Scarichi il PDF. Fine.
 
 ---
 
+## Vuoi solo l'eseguibile?
+
+Se non vuoi installare Python e vuoi solo usare QuintoQuote come programma Windows:
+
+1. apri la tab `Actions` del repository e entra nell'ultima build Windows completata con successo
+2. scarica l'artifact `QuintoQuote-portable-windows`
+3. estrai lo ZIP scaricato
+4. apri la cartella estratta e fai doppio click su `QuintoQuote.exe`
+
+Se il repository ha gia una Release pubblicata, puoi scaricare direttamente da li il file `QuintoQuote-portable.zip`.
+
+Il file che ti interessa davvero e:
+- `QuintoQuote-portable.zip` se stai scaricando da Actions o Release
+- `QuintoQuote.exe` una volta estratto lo ZIP
+
+In breve: scarichi la build gia pronta, estrai, apri `QuintoQuote.exe` e lavori.
+
+---
+
 ## Build EXE Windows
 
 Per generare il pacchetto desktop Windows dal repository locale:
 
 ```powershell
-cd C:\Users\pramp\Downloads\QuintoQuote
+cd <indirizzo-cartella>\QuintoQuote
 .\build_exe.ps1 -Clean
 ```
 
@@ -66,10 +85,11 @@ La build include:
 
 Se vuoi usare QuintoQuote come programma Windows:
 
-1. estrai `QuintoQuote-portable.zip` oppure apri la cartella `dist\QuintoQuote`
-2. avvia `QuintoQuote.exe` con doppio click
-3. il browser si apre automaticamente sulla web UI locale
-4. lavori normalmente da interfaccia web, ma senza dover installare Python
+1. scarica `QuintoQuote-portable.zip` da GitHub Actions o da una Release, oppure apri la cartella `dist\QuintoQuote` se hai fatto una build locale
+2. estrai lo ZIP se serve
+3. avvia `QuintoQuote.exe` con doppio click
+4. il browser si apre automaticamente sulla web UI locale
+5. lavori normalmente da interfaccia web, ma senza dover installare Python
 
 Comportamento del file `.exe`:
 - avvia direttamente la UI locale anche senza parametri
@@ -98,7 +118,7 @@ Il repository include una pipeline Windows pronta in:
 
 Cosa fa:
 - installa Python
-- installa le dipendenze del progetto
+- crea `.venv` e installa le dipendenze del progetto
 - installa Tesseract OCR sul runner Windows
 - genera `QuintoQuote.exe`
 - crea `QuintoQuote-portable.zip`
@@ -108,7 +128,8 @@ Cosa fa:
 Flusso consigliato:
 1. fai push su `main` per ottenere gli artifact nella tab `Actions`
 2. crea una Release GitHub quando vuoi pubblicare una build stabile
-3. scarica `QuintoQuote-portable.zip` direttamente dalla Release o dagli artifact del workflow
+3. scarica l'artifact `QuintoQuote-portable-windows` oppure `QuintoQuote-portable.zip` dalla Release
+4. estrai il contenuto e avvia `QuintoQuote.exe`
 
 ---
 
