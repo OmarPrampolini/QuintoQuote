@@ -2257,28 +2257,120 @@ def _looks_like_bibanca_contract(text: str) -> bool:
     return sum(1 for anchor in anchors if anchor in haystack) >= 4
 
 
+def _extract_page_rows(page: object, *, min_x: float = 0.0, max_x: float = 10000.0, y_tolerance: float = 1.6) -> list[tuple[float, str]]:
+    rows: list[tuple[float, list[tuple[float, str]]]] = []
+    for word in page.get_text("words", sort=True):
+        x0, y0, x1, y1, text, *_ = word
+        if x0 < min_x or x0 >= max_x:
+            continue
+        cleaned = sanitize_pdf_text(text)
+        if not cleaned or cleaned.startswith("[["):
+            continue
+        if rows and abs(y0 - rows[-1][0]) <= y_tolerance:
+            rows[-1][1].append((float(x0), cleaned))
+        else:
+            rows.append((float(y0), [(float(x0), cleaned)]))
+    normalized_rows: list[tuple[float, str]] = []
+    for y0, parts in rows:
+        line = sanitize_pdf_text(" ".join(part for _, part in sorted(parts, key=lambda item: item[0])))
+        if line and not line.startswith("[["):
+            normalized_rows.append((y0, line))
+    return normalized_rows
+
+
+def _search_row_group(
+    rows: list[tuple[float, str]],
+    min_y: float,
+    max_y: float,
+    pattern: str,
+    *,
+    exclude_tokens: tuple[str, ...] = (),
+) -> str:
+    compiled = re.compile(pattern, re.IGNORECASE)
+    for y0, line in rows:
+        if not (min_y <= y0 <= max_y):
+            continue
+        lower_line = line.lower()
+        if any(token in lower_line for token in exclude_tokens):
+            continue
+        match = compiled.search(line)
+        if match:
+            return sanitize_pdf_text(match.group(match.lastindex or 1))
+    return ""
+
+
 def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, str]:
     fitz_mod = require_pymupdf()
     doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
     try:
-        page = doc[0]
-        page_text = _normalize_search_text(page.get_text("text"))
         fields: dict[str, str] = {}
 
-        lender_name = _search_first_group(r"(?im)^Finanziatore\s*(?:\n\s*)?([^\n]+)$", page_text, flags=re.IGNORECASE | re.MULTILINE)
+        summary_page = doc[0]
+        summary_text = _normalize_search_text(summary_page.get_text("text"))
+        lender_name = _search_first_group(r"(?im)^Finanziatore\s*(?:\n\s*)?([^\n]+)$", summary_text, flags=re.IGNORECASE | re.MULTILINE)
+        if not lender_name and "bibanca" in text.lower():
+            lender_name = "Bibanca S.p.A."
         lender_name = _clean_extracted_value("lender_name", lender_name)
         if lender_name and not _reject_extracted_value("lender_name", lender_name):
             fields["lender_name"] = lender_name
 
-        blocks = page.get_text("blocks")
+        if doc.page_count >= 5:
+            detail_page = doc[4]
+            detail_rows = [
+                (y0, sanitize_pdf_text(re.sub(r"_+", " ", line)))
+                for y0, line in _extract_page_rows(detail_page, max_x=335)
+            ]
+
+            first_name = _search_row_group(detail_rows, 112, 117, r"\bNome\b\s+([A-ZÀ-Ÿ' ]{2,79})$")
+            last_name = _search_row_group(detail_rows, 124, 129, r"\bCognome\b\s+([A-ZÀ-Ÿ' ]{2,79})$")
+            full_name = _normalize_person_name(first_name, last_name)
+            if full_name and not _reject_extracted_value("full_name", full_name):
+                fields["full_name"] = full_name
+
+            specialized_map = {
+                "birth_place": _search_row_group(detail_rows, 137, 140, r"Nata\/o a\s+([A-ZÀ-Ÿ' ]{2,79})\s+Prov"),
+                "birth_province_code": _search_row_group(detail_rows, 137, 140, r"\bProv\.?\s+([A-Z]{2})\b"),
+                "birth_date": _search_row_group(detail_rows, 148, 150.5, _DATE_CAPTURE),
+                "tax_code": _search_row_group(detail_rows, 148, 150.5, r"\b([A-Z0-9]{16})\b"),
+                "residence_city": _search_row_group(detail_rows, 160, 161.5, r"Resident\s*e?\s+a\s+([A-ZÀ-Ÿ' ]{2,79})\s+Prov"),
+                "residence_province_code": _search_row_group(detail_rows, 160, 161.5, r"\bProv\.?\s+([A-Z]{2})\b"),
+                "residence_cap": _search_row_group(detail_rows, 171, 172.5, r"\bCAP\b\s+(\d{5})\b"),
+                "residence_street": _search_row_group(detail_rows, 171, 172.5, r"\bVia\b\s+(.+?)\s+\bCAP\b"),
+                "employer_entity": _search_row_group(detail_rows, 183, 184.5, r"\bDipendente di\b\s+(.+)$"),
+                "phone": _search_row_group(detail_rows, 194, 196, r"\bTel\.?\s+([0-9 ]{5,24})$"),
+                "email": _search_row_group(detail_rows, 205, 206.5, r"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})"),
+                "installment_count": _search_row_group(detail_rows, 239, 242, r"\bNumero rate:\s*(48|60|72|84|96|108|120)\b"),
+                "monthly_installment": _search_row_group(detail_rows, 239, 241, rf"\bImporto rata:\s*{_MONEY_CAPTURE}"),
+                "taeg": _search_row_group(detail_rows, 261, 263, r"\bTAEG\).*?([0-9]+(?:[.,][0-9]{1,3})?)$"),
+                "teg": _search_row_group(detail_rows, 271, 274.5, r"([0-9]+(?:[.,][0-9]{1,3})?)"),
+                "total_ceded": _search_row_group(detail_rows, 283, 286, rf"\bImporto Totale dovuto.*?{_MONEY_CAPTURE}"),
+                "loan_amount": _search_row_group(detail_rows, 294, 297, rf"\bCapitale finanziato:\s*{_MONEY_CAPTURE}"),
+                "tan": _search_row_group(detail_rows, 315, 316, r"\bTAN\).*?([0-9]+(?:[.,][0-9]{1,3})?)$"),
+                "interest_total": _search_row_group(detail_rows, 334, 336, rf"\bInteressi complessivi pari a:\s*{_MONEY_CAPTURE}"),
+                "net_disbursed": _search_row_group(detail_rows, 364, 370, rf"\bImporto Totale del credito:\s*{_MONEY_CAPTURE}"),
+                "borrower_iban": _search_row_group(detail_rows, 461, 462.8, r"\bCodice IBAN\b\s+(IT\d{2}[A-Z0-9]{23})\b"),
+            }
+
+            for field_name, raw in specialized_map.items():
+                cleaned = _clean_extracted_value(field_name, raw)
+                if cleaned and not _reject_extracted_value(field_name, cleaned):
+                    fields[field_name] = cleaned
+
+            if fields.get("loan_amount") and not fields.get("net_disbursed"):
+                fields["net_disbursed"] = fields["loan_amount"]
+            if fields.get("net_disbursed") and not fields.get("loan_amount"):
+                fields["loan_amount"] = fields["net_disbursed"]
+            if fields.get("birth_place") and not fields.get("birth_province_name"):
+                fields["birth_province_name"] = fields["birth_place"]
+            if fields.get("residence_city") and not fields.get("residence_province_name"):
+                fields["residence_province_name"] = fields["residence_city"]
+
+        blocks = summary_page.get_text("blocks")
         numeric_blocks: list[tuple[float, float, str]] = []
         for block in blocks:
             x0, y0, x1, y1, block_text, *_ = block
-            cleaned = sanitize_pdf_text(block_text)
-            cleaned = cleaned.replace(" ", "")
-            if x0 < 280:
-                continue
-            if not (430 <= y0 <= 760):
+            cleaned = sanitize_pdf_text(block_text).replace(" ", "")
+            if x0 < 280 or not (430 <= y0 <= 760):
                 continue
             if re.fullmatch(r"\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}", cleaned):
                 numeric_blocks.append((y0, x0, cleaned))
@@ -2290,7 +2382,7 @@ def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, s
             candidates.sort(key=lambda item: (item[0], item[1]))
             return candidates[0][2]
 
-        sequential_map = {
+        summary_map = {
             "loan_amount": nearest_value(438, 452),
             "net_disbursed": nearest_value(454, 474),
             "installment_count": nearest_value(548, 562),
@@ -2300,15 +2392,17 @@ def _extract_bibanca_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, s
             "taeg": nearest_value(734, 752),
         }
         durata = nearest_value(526, 545)
-        if durata and not sequential_map["installment_count"]:
-            sequential_map["installment_count"] = durata
+        if durata and not summary_map["installment_count"]:
+            summary_map["installment_count"] = durata
 
-        if sequential_map["loan_amount"] and not sequential_map["net_disbursed"]:
-            sequential_map["net_disbursed"] = sequential_map["loan_amount"]
-        if sequential_map["net_disbursed"] and not sequential_map["loan_amount"]:
-            sequential_map["loan_amount"] = sequential_map["net_disbursed"]
+        if summary_map["loan_amount"] and not summary_map["net_disbursed"]:
+            summary_map["net_disbursed"] = summary_map["loan_amount"]
+        if summary_map["net_disbursed"] and not summary_map["loan_amount"]:
+            summary_map["loan_amount"] = summary_map["net_disbursed"]
 
-        for field_name, raw in sequential_map.items():
+        for field_name, raw in summary_map.items():
+            if field_name in fields and fields[field_name]:
+                continue
             cleaned = _clean_extracted_value(field_name, raw)
             if cleaned and not _reject_extracted_value(field_name, cleaned):
                 fields[field_name] = cleaned
