@@ -186,7 +186,7 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 | Multi-scenario | Piu combinazioni rata/durata nello stesso documento |
 | Storico PDF | Tutti i preventivi generati, scaricabili dalla UI |
 | Modulistica MEF | Compilatore guidato per Allegato E, Allegato C, Frontespizio MEF e Frontespizio Integrativo |
-| Dossier NO AI | Upload PDF, JPG, PNG, OCR locale e prefill moduli |
+| Assistente documenti NO AI | Upload PDF, JPG, PNG, OCR locale e prefill integrato dentro i moduli |
 | Check Finale Pratica | Verifica completezza, mismatch documentali, coerenze numeriche e pacchetto finale moduli |
 | CLI guidata | Prompt interattivo da terminale |
 | CLI batch | `--non-interactive` per script e automazioni |
@@ -203,21 +203,22 @@ Nella web UI trovi anche la sezione **Moduli**.
 - **Frontespizio Integrativo Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 26 campi compilabili.
 - **Output diretto in PDF**: compili i campi nella UI e scarichi il modulo gia popolato, mantenendo impaginazione e caselle originali.
 - **Compatibilità XFA**: per i due frontespizi QuintoQuote aggiorna sia il campo visibile sia il `datasets` interno del PDF, per maggiore compatibilità con Adobe Reader e con i flussi MEF/PEC.
+- **Assistente documenti integrato**: ogni modulo contiene il proprio spazio per caricare contratto, cedolino e documenti anagrafici, rivedere i dati estratti e riversarli subito nel modulo aperto.
 
 I template PDF di partenza vengono letti dalla cartella `docs/`.
 
 ---
 
-## Dossier Documenti (NO AI)
+## Assistente Documenti Nei Moduli (NO AI)
 
-Nella web UI trovi anche la sezione **Dossier**.
+L'assistente documenti non è piu una modalità separata: vive direttamente dentro ogni modulo nella sezione **Moduli**.
 
 - Accetta piu PDF testuali caricati insieme
 - Accetta anche screenshot e scansioni in JPG/PNG tramite OCR locale
 - Richiede la scelta della tipologia documento per ogni upload: `Busta paga NoiPA`, `Contratto di finanziamento`, `Carta di identità`, `Tessera sanitaria`
 - Usa parser e regole dedicati per la tipologia scelta, senza AI
 - Estrae i campi con regex e anchor text
-- Permette analisi incrementale: aggiungi un documento, poi un altro, poi salvi la revisione e continui sullo stesso dossier
+- Permette analisi incrementale: aggiungi un documento, poi un altro, poi salvi la revisione e continui sulla stessa pratica
 - Mostra i dati estratti in una schermata di revisione, modificabili prima del prefill
 - Aggrega i dati trovati e precompila Allegato E, Allegato C, Frontespizio MEF e Frontespizio Integrativo
 - Include un **Check Finale Pratica** con esito `Pronta`, `Pronta con verifiche` o `Non pronta`
@@ -398,7 +399,7 @@ Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento
 - per il lavoro quotidiano usa la web UI
 - usa la CLI non interattiva quando vuoi integrazione, script o automazioni locali
 - usa i `--scenario` se vuoi produrre un unico PDF con piu opzioni di rata/durata
-- usa il Dossier dalla web UI quando devi estrarre dati da documenti e precompilare Allegato E/C e i due frontespizi MEF
+- usa la sezione **Moduli** quando devi estrarre dati da documenti e precompilare Allegato E/C e i due frontespizi MEF
 
 ### Esempi utili
 
@@ -432,7 +433,7 @@ python quintoquote.py --non-interactive ^
 - Se il browser non si apre, copia a mano l'indirizzo mostrato nella console o nel processo di avvio.
 - Se la porta `5000` e occupata, la versione `.exe` prova automaticamente una porta successiva.
 - Se l'OCR non legge bene uno screenshot, usa immagini piu nitide e piu grandi.
-- Se un documento non viene riconosciuto bene nel Dossier, scegli sempre la tipologia corretta prima dell'upload.
+- Se un documento non viene riconosciuto bene nell'assistente documenti del modulo, scegli sempre la tipologia corretta prima dell'upload.
 - Se Allegato C non ha campi compilabili nativi, QuintoQuote usa un fallback a coordinate sul modulo.
 - Se distribuisci l'app, non separare `QuintoQuote.exe` dalla sua cartella `ocr`.
 

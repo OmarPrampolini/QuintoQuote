@@ -5035,7 +5035,6 @@ def run_web(
 
         <nav class="nav">
           <a href="/" class="{{ 'active' if page == 'form' }}">✏️ Nuovo</a>
-          <a href="/dossier" class="{{ 'active' if page == 'dossier' }}">🗂️ Dossier</a>
           <a href="/moduli" class="{{ 'active' if page == 'modules' }}">📎 Moduli</a>
           <a href="/storico" class="{{ 'active' if page == 'history' }}">📂 Storico</a>
           <a href="/impostazioni" class="{{ 'active' if page == 'settings' }}">⚙️ Impostazioni</a>
@@ -5761,12 +5760,53 @@ def run_web(
 
     MODULI_HOME_CONTENT = """
     <div class="card">
-      <div class="section-title">📎 Compilatore Modulistica MEF</div>
+      <div class="section-title">📎 Moduli MEF</div>
       <div class="info-banner">
-        I template PDF presenti in <code>docs/</code> sono mappati sui rispettivi campi compilabili.
-        Per i frontespizi ufficiali LiveCycle/XFA QuintoQuote aggiorna anche il dataset interno del PDF,
-        non solo il valore visibile nel campo.
+        In QuintoQuote l'assistente documenti è integrato direttamente dentro ogni modulo: apri il modulo che ti serve,
+        usa i documenti guidati per precompilare i campi utili e completa il PDF nello stesso spazio.
+        Per i frontespizi ufficiali LiveCycle/XFA QuintoQuote aggiorna anche il dataset interno del PDF, non solo il valore visibile nel campo.
       </div>
+
+      {% if notice %}
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#d1fae5;font-size:13px">
+        {{ notice }}
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <div class="section-title" style="margin-top:24px">🧭 Flusso consigliato</div>
+      <div class="helper-text" style="margin-bottom:14px">
+        1. Apri il modulo. 2. Se ti serve, carica contratto, cedolino o documenti anagrafici dentro quel modulo.
+        3. Rivedi i dati estratti. 4. Scarica il PDF compilato. 5. Chiudi con il check finale pratica.
+      </div>
+
+      {% if assistant_results_count %}
+      <div class="preview-grid" style="margin-bottom:14px">
+        <div class="preview-item highlight">
+          <div class="label">Documenti analizzati</div>
+          <div class="value">{{ assistant_results_count }}</div>
+        </div>
+        <div class="preview-item highlight">
+          <div class="label">Campi pratica raccolti</div>
+          <div class="value">{{ assistant_reviewed_count }}</div>
+        </div>
+        <div class="preview-item">
+          <div class="label">Tipologie presenti</div>
+          <div class="value" style="font-size:15px">{{ assistant_document_labels|join(', ') }}</div>
+        </div>
+      </div>
+      <div class="preview-actions" style="flex-wrap:wrap;margin-bottom:18px">
+        <a href="/moduli/check-finale" class="btn-primary" style="flex:1;min-width:240px;text-decoration:none">Vai al Check Finale Pratica</a>
+        <form method="post" action="/moduli/assistente/reset" style="flex:1;min-width:220px">
+          <button type="submit" class="btn-secondary" style="width:100%;margin:0">Nuova analisi</button>
+        </form>
+      </div>
+      {% endif %}
 
       <div class="module-grid">
         {% for spec in specs %}
@@ -5775,10 +5815,15 @@ def run_web(
           <p>{{ spec.description }}</p>
           <div class="module-meta">
             <span>{{ spec.summary }}</span>
-            <span>{{ spec.template_name }}</span>
+            <span>{{ spec.render_mode|upper }}</span>
           </div>
+          {% if spec.render_mode == 'xfa' %}
+          <div class="helper-text" style="margin-bottom:12px">Compilazione frontespizio con gestione Adobe LiveCycle/XFA.</div>
+          {% else %}
+          <div class="helper-text" style="margin-bottom:12px">Compilazione classica AcroForm con supporto documenti integrato.</div>
+          {% endif %}
           <a href="/moduli/{{ spec.slug }}" class="btn-primary" style="margin-top:0;text-decoration:none">
-            Apri compilatore
+            Apri modulo
           </a>
         </div>
         {% endfor %}
@@ -5792,15 +5837,156 @@ def run_web(
       <div class="info-banner">
         {{ spec.description }}<br/>
         Template di origine: <code>{{ spec.template_name }}</code>. {{ spec.summary }}
-        {% if spec.render_mode == 'xfa' %}<br/>Compatibilità: modulo Adobe LiveCycle/XFA, compilato con aggiornamento widget + dataset interno.{% endif %}
+        {% if spec.render_mode == 'xfa' %}<br/>Compatibilità: modulo Adobe LiveCycle/XFA, compilato con aggiornamento widget + dataset interno. Verifica finale consigliata in Adobe Reader prima dell'invio.{% endif %}
       </div>
 
+      {% if notice %}
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#d1fae5;font-size:13px">
+        {{ notice }}
+      </div>
+      {% endif %}
+
       {% if error %}
-      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
         {{ error }}
       </div>
       {% endif %}
 
+      <div class="section-title" style="margin-top:24px">🗂️ Assistente Documenti</div>
+      <div class="info-banner">
+        {{ assistant_intro }} {{ ocr_status_message }}
+      </div>
+
+      {% if assistant_notice %}
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#d1fae5;font-size:13px">
+        {{ assistant_notice }}
+      </div>
+      {% endif %}
+
+      {% if assistant_error %}
+      <div style="padding:12px 16px;margin:16px 0;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+        {{ assistant_error }}
+      </div>
+      {% endif %}
+
+      <div class="preview-grid" style="margin:16px 0 14px">
+        <div class="preview-item {% if assistant_results %}highlight{% endif %}">
+          <div class="label">Documenti analizzati</div>
+          <div class="value">{{ assistant_results|length }}</div>
+        </div>
+        <div class="preview-item {% if assistant_reviewed_count %}highlight{% endif %}">
+          <div class="label">Campi pratica raccolti</div>
+          <div class="value">{{ assistant_reviewed_count }}</div>
+        </div>
+        <div class="preview-item {% if not assistant_missing_fields %}highlight{% endif %}">
+          <div class="label">Campi obbligatori coperti</div>
+          <div class="value">{{ assistant_ready_ratio }}</div>
+        </div>
+      </div>
+
+      {% if assistant_missing_fields %}
+      <div class="helper-text" style="margin-bottom:14px">
+        Per questo modulo mancano ancora: {{ assistant_missing_fields|join(', ') }}.
+      </div>
+      {% else %}
+      <div class="helper-text" style="margin-bottom:14px">
+        I campi obbligatori di base del modulo risultano coperti dai dati raccolti.
+      </div>
+      {% endif %}
+
+      <form method="post" action="/moduli/{{ spec.slug }}/assistente/upload" enctype="multipart/form-data">
+        <div class="upload-panel">
+          <strong>1. Scegli il tipo di documento da usare come supporto</strong>
+          <div class="helper-text">
+            L'assistente usa regole deterministiche diverse in base al documento scelto. Per evitare ambiguità, carica un solo tipo per volta.
+          </div>
+          <div class="module-grid" style="margin-top:14px">
+            {% for doc_type in upload_document_types %}
+            <label class="module-card" style="cursor:pointer;border:1px solid {{ 'rgba(201,162,39,.55)' if selected_document_key == doc_type.key else 'rgba(255,255,255,.08)' }};box-shadow:{{ '0 0 0 1px rgba(201,162,39,.28) inset' if selected_document_key == doc_type.key else 'none' }};">
+              <div style="display:flex;gap:12px;align-items:flex-start">
+                <input type="radio" name="document_type" value="{{ doc_type.key }}" {% if selected_document_key == doc_type.key %}checked{% endif %} style="margin-top:4px;accent-color:var(--accent-light)" />
+                <div>
+                  <h3 style="margin:0 0 8px">{{ doc_type.label }}</h3>
+                  <p style="margin:0 0 8px">{{ doc_type.description }}</p>
+                  <div class="helper-text">{{ doc_type.helper_text }}</div>
+                </div>
+              </div>
+            </label>
+            {% endfor %}
+          </div>
+          <strong style="display:block;margin-top:18px">2. Carica i documenti utili a questo modulo</strong>
+          <div class="helper-text">
+            Il flusso è incrementale: puoi aggiungere prima il contratto, poi il cedolino, poi i documenti anagrafici senza perdere la pratica in corso.
+          </div>
+          <input type="file" name="documenti" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg" multiple />
+        </div>
+        <div class="preview-actions" style="margin-top:14px;flex-wrap:wrap">
+          <button type="submit" class="btn-primary" style="flex:1;min-width:220px;margin:0">Analizza e aggiungi documenti</button>
+          <a href="/moduli/check-finale" class="btn-secondary" style="flex:1;min-width:220px;display:flex;align-items:center;justify-content:center;text-decoration:none">Vai al Check Finale</a>
+        </div>
+      </form>
+
+      {% if assistant_results %}
+      <div class="section-title" style="margin-top:24px">📄 File analizzati</div>
+      <div class="dossier-list">
+        {% for result in assistant_results %}
+        <div class="dossier-item">
+          <div class="dossier-item-head">
+            <div>
+              <h4>{{ result.filename }}</h4>
+              <div class="helper-text">{{ result.document_label }}</div>
+            </div>
+            <div class="dossier-badges">
+              <span>{{ result.page_count }} pag.</span>
+              <span>{{ result.text_length }} caratteri</span>
+              <span>{{ result.keyword_hits }} indicatori</span>
+              <span>{{ result.extracted_fields|length }} campi</span>
+            </div>
+          </div>
+          {% if result.warnings %}
+          <div class="warning-list">
+            {% for warning in result.warnings %}
+            <div>• {{ warning }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <form method="post" action="/moduli/{{ spec.slug }}/assistente/review" style="margin-top:18px">
+        <div class="section-title">🧾 Revisione dati raccolti</div>
+        <div class="info-banner">
+          Qui controlli e completi i dati comuni della pratica. Quando hai finito, usa <strong>Aggiorna questo modulo</strong> per riversarli nel PDF che stai compilando.
+        </div>
+        {% for section in review_sections %}
+        <div class="section-title" style="margin-top:{{ '0' if loop.first else '20px' }}">🧩 {{ section.title }}</div>
+        <div class="form-grid">
+          {% for field in section.fields %}
+          <div class="form-group">
+            <label>{{ field.label }}</label>
+            <input name="{{ field.name }}" value="{{ field.value }}" placeholder="{{ field.placeholder }}" autocomplete="off"/>
+            {% if field.source_filename %}
+            <div class="helper-text">Fonte: {{ field.source_filename }} · {{ field.source_label }}</div>
+            {% else %}
+            <div class="helper-text">Non trovato automaticamente: puoi inserirlo a mano.</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+        <div class="preview-actions" style="margin-top:16px;flex-wrap:wrap">
+          <button type="submit" class="btn-secondary" style="flex:1;min-width:220px;margin:0">Salva dati revisione</button>
+          <button type="submit" formaction="/moduli/{{ spec.slug }}/prefill" class="btn-primary" style="flex:1;min-width:240px;margin:0">Aggiorna questo modulo dai documenti</button>
+        </div>
+      </form>
+
+      <form method="post" action="/moduli/{{ spec.slug }}/assistente/reset" style="margin-top:12px">
+        <button type="submit" class="btn-secondary" style="width:100%;margin:0">Nuova analisi</button>
+      </form>
+      {% endif %}
+
+      <div class="section-title" style="margin-top:24px">📝 Compilazione modulo</div>
       <form method="post" action="/moduli/{{ spec.slug }}/download">
         {% for section in spec.sections %}
         <div class="section-title" style="margin-top:{{ '0' if loop.first else '20px' }}">{{ section.icon }} {{ section.title }}</div>
@@ -5940,13 +6126,13 @@ def run_web(
       <div class="section-title" style="margin-top:24px">📦 Azioni Finali</div>
       <div class="helper-text" style="margin-bottom:10px">Output cartella pratica: <code>{{ practice_folder_hint }}</code></div>
       <div class="preview-actions" style="flex-wrap:wrap">
-        <form method="post" action="/dossier/final-check/download-all" style="flex:2;min-width:240px">
+        <form method="post" action="/moduli/check-finale/download-all" style="flex:2;min-width:240px">
           <button type="submit" class="btn-primary" style="margin:0" {% if not summary.can_download %}disabled{% endif %}>Scarica tutti i moduli</button>
         </form>
-        <form method="post" action="/dossier/final-check/open-folder" style="flex:1;min-width:220px">
+        <form method="post" action="/moduli/check-finale/open-folder" style="flex:1;min-width:220px">
           <button type="submit" class="btn-secondary" style="width:100%;margin:0">Apri cartella pratica</button>
         </form>
-        <a href="/dossier" class="btn-secondary" style="flex:1;min-width:220px;display:flex;align-items:center;justify-content:center">Torna a correggere</a>
+        <a href="/moduli" class="btn-secondary" style="flex:1;min-width:220px;display:flex;align-items:center;justify-content:center">Torna ai moduli</a>
       </div>
       {% if not summary.can_download %}
       <div class="helper-text" style="margin-top:10px">Il download completo si abilita quando la pratica passa a <strong>Pronta</strong> o <strong>Pronta con verifiche</strong>.</div>
@@ -5971,11 +6157,29 @@ def run_web(
         scripts_html = render_template_string(scripts_tpl, **kwargs) if scripts_tpl else ""
         return render_template_string(BASE_HTML, content=content_html, scripts=scripts_html, **kwargs)
 
-    def render_modulo_form(spec_key: str, values: Optional[dict[str, str]] = None, error: str = ""):
+    def render_modulo_form(
+        spec_key: str,
+        values: Optional[dict[str, str]] = None,
+        error: str = "",
+        notice: str = "",
+        assistant_error: str = "",
+        assistant_notice: str = "",
+        selected_document_key: str = "",
+        results: Optional[list[DocumentExtractionResult]] = None,
+        manual_values: Optional[dict[str, str]] = None,
+    ):
         spec = get_pdf_template_spec(spec_key)
+        current_results = results
+        current_manual_values = manual_values
+        if current_results is None or current_manual_values is None:
+            current_results, current_manual_values = load_current_dossier_state()
+        reviewed_fields = merge_reviewed_case_fields(current_results or [], current_manual_values or {})
+        case_values = aggregated_fields_to_dict(reviewed_fields)
         merged_values = default_pdf_form_values(spec)
+        merged_values.update(build_prefill_for_template(spec.key, case_values))
         if values:
             merged_values.update(values)
+        missing_fields = build_module_missing_field_labels(spec, merged_values)
         return render_page(
             MODULO_FORM_CONTENT,
             page="modules",
@@ -5983,6 +6187,18 @@ def run_web(
             spec=spec,
             values=merged_values,
             error=error,
+            notice=notice,
+            assistant_error=assistant_error,
+            assistant_notice=assistant_notice,
+            assistant_intro=build_module_assistant_intro(spec),
+            assistant_results=current_results or [],
+            assistant_reviewed_count=len([field for field in reviewed_fields if field.value]),
+            assistant_missing_fields=missing_fields,
+            assistant_ready_ratio=build_module_ready_ratio(spec, merged_values),
+            review_sections=build_review_sections(reviewed_fields),
+            upload_document_types=get_ordered_upload_document_types(spec),
+            selected_document_key=selected_document_key or get_last_dossier_document_type(),
+            ocr_status_message=get_ocr_status_message(),
         )
 
     def render_final_check_page(
@@ -5996,7 +6212,7 @@ def run_web(
         folder_hint = Path(last_practice_dir) if last_practice_dir and Path(last_practice_dir).exists() else _get_final_check_output_root(out_dir)
         return render_page(
             FINAL_CHECK_CONTENT,
-            page="dossier",
+            page="modules",
             title="Check Finale Pratica",
             summary=summary,
             practice_folder_hint=str(folder_hint),
@@ -6042,6 +6258,43 @@ def run_web(
         if clean_key in _DOSSIER_UPLOAD_DOCUMENT_KEYS:
             session["dossier_last_document_type"] = clean_key
 
+    _MODULE_UPLOAD_PREFERENCES = {
+        ALLEGATO_E_SPEC.key: ("contratto_finanziamento", "cedolino_noipa", "carta_identita", "tessera_sanitaria"),
+        ALLEGATO_C_SPEC.key: ("contratto_finanziamento", "cedolino_noipa", "tessera_sanitaria", "carta_identita"),
+        FRONTESPIZIO_BANCHE_SPEC.key: ("contratto_finanziamento", "cedolino_noipa", "carta_identita", "tessera_sanitaria"),
+        FRONTESPIZIO_INTEGRATIVO_SPEC.key: ("contratto_finanziamento", "cedolino_noipa", "carta_identita", "tessera_sanitaria"),
+    }
+
+    def get_ordered_upload_document_types(spec: PdfTemplateSpec) -> tuple[DocumentTypeDef, ...]:
+        preferred = _MODULE_UPLOAD_PREFERENCES.get(spec.key, ())
+        rank = {key: index for index, key in enumerate(preferred)}
+        return tuple(sorted(_DOSSIER_UPLOAD_DOCUMENT_TYPES, key=lambda item: (rank.get(item.key, 99), item.label.lower())))
+
+    def build_module_assistant_intro(spec: PdfTemplateSpec) -> str:
+        if spec.render_mode == "xfa":
+            return (
+                "Questo modulo usa un frontespizio Adobe LiveCycle/XFA: l'assistente documenti raccoglie anagrafica, "
+                "dati contratto e riferimenti NoiPA per aiutarti a precompilarlo nello stesso flusso."
+            )
+        return (
+            "Qui puoi usare contratto, cedolino e documenti anagrafici per accelerare la compilazione del modulo "
+            "senza uscire dalla schermata corrente."
+        )
+
+    def build_module_missing_field_labels(spec: PdfTemplateSpec, values: dict[str, str]) -> list[str]:
+        missing: list[str] = []
+        for field_name in _FINAL_CHECK_REQUIRED_FIELDS.get(spec.key, ()):
+            if not sanitize_pdf_text(values.get(field_name, "")):
+                missing.append(_final_check_field_label(spec, field_name))
+        return missing
+
+    def build_module_ready_ratio(spec: PdfTemplateSpec, values: dict[str, str]) -> str:
+        required_names = _FINAL_CHECK_REQUIRED_FIELDS.get(spec.key, ())
+        if not required_names:
+            return "n/d"
+        filled = sum(1 for name in required_names if sanitize_pdf_text(values.get(name, "")))
+        return f"{filled}/{len(required_names)}"
+
     def render_dossier_page(
         results: Optional[list[DocumentExtractionResult]] = None,
         manual_values: Optional[dict[str, str]] = None,
@@ -6062,6 +6315,22 @@ def run_web(
             ocr_status_message=get_ocr_status_message(),
             error=error,
             notice=notice,
+        )
+
+    def render_moduli_home_page(notice: str = "", error: str = ""):
+        results, manual_values = load_current_dossier_state()
+        reviewed_fields = merge_reviewed_case_fields(results, manual_values)
+        document_labels = sorted({result.document_label for result in results if result.document_label})
+        return render_page(
+            MODULI_HOME_CONTENT,
+            page="modules",
+            title="Modulistica MEF",
+            specs=(ALLEGATO_E_SPEC, ALLEGATO_C_SPEC, FRONTESPIZIO_BANCHE_SPEC, FRONTESPIZIO_INTEGRATIVO_SPEC),
+            assistant_results_count=len(results),
+            assistant_reviewed_count=len([field for field in reviewed_fields if field.value]),
+            assistant_document_labels=document_labels,
+            notice=notice,
+            error=error,
         )
 
     def _render_preview_html(preventivi: list, prof: BrandingProfile, text_overrides: Optional[dict] = None) -> str:
@@ -6337,8 +6606,7 @@ def run_web(
 
     @app.get("/dossier")
     def dossier_get():
-        results, manual_values = load_current_dossier_state()
-        return render_dossier_page(results=results, manual_values=manual_values)
+        return redirect(url_for("moduli_home"))
 
     @app.post("/dossier")
     def dossier_post():
@@ -6452,12 +6720,17 @@ def run_web(
     def dossier_reset_post():
         clear_current_dossier_state()
         session.pop("final_check_last_dir", None)
-        return render_dossier_page(notice="Nuova analisi avviata: dossier azzerato.")
+        return render_moduli_home_page(notice="Nuova analisi avviata: assistente documenti azzerato.")
 
     @app.get("/moduli")
     def moduli_home():
-        specs = (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC, FRONTESPIZIO_BANCHE_SPEC, FRONTESPIZIO_INTEGRATIVO_SPEC)
-        return render_page(MODULI_HOME_CONTENT, page="modules", title="Modulistica MEF", specs=specs)
+        return render_moduli_home_page()
+
+    @app.post("/moduli/assistente/reset")
+    def moduli_assistant_reset():
+        clear_current_dossier_state()
+        session.pop("final_check_last_dir", None)
+        return render_moduli_home_page(notice="Nuova analisi avviata: assistente documenti azzerato.")
 
     @app.get("/moduli/<slug>")
     def modulo_form(slug):
@@ -6465,6 +6738,99 @@ def run_web(
             return render_modulo_form(slug)
         except KeyError:
             return "Modulo non trovato", 404
+
+    @app.post("/moduli/<slug>/assistente/upload")
+    def modulo_assistant_upload(slug):
+        try:
+            get_pdf_template_spec(slug)
+        except KeyError:
+            return "Modulo non trovato", 404
+
+        existing_results, manual_values = load_current_dossier_state()
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        selected_document_key = sanitize_pdf_text(request.form.get("document_type", ""))
+        uploaded_files = [file for file in request.files.getlist("documenti") if file and file.filename]
+        if not uploaded_files:
+            return render_modulo_form(
+                slug,
+                assistant_error="Carica almeno un PDF, JPG o PNG da analizzare.",
+                selected_document_key=selected_document_key,
+                results=existing_results,
+                manual_values=manual_values,
+            ), 400
+        if selected_document_key not in _DOSSIER_UPLOAD_DOCUMENT_KEYS:
+            return render_modulo_form(
+                slug,
+                assistant_error="Seleziona la tipologia documento prima di analizzare il file.",
+                selected_document_key=selected_document_key,
+                results=existing_results,
+                manual_values=manual_values,
+            ), 400
+
+        new_results: list[DocumentExtractionResult] = []
+        errors: list[str] = []
+        for file in uploaded_files:
+            safe_name = Path(file.filename).name
+            if not is_supported_dossier_file(safe_name):
+                errors.append(f"{safe_name}: formato non supportato, usa PDF, JPG o PNG.")
+                continue
+            data = file.read()
+            if not data:
+                errors.append(f"{safe_name}: file vuoto.")
+                continue
+            try:
+                new_results.append(extract_document_result(safe_name, data, expected_document_key=selected_document_key))
+            except Exception as exc:
+                errors.append(f"{safe_name}: {exc}")
+
+        if not new_results and errors and not existing_results:
+            return render_modulo_form(
+                slug,
+                assistant_error=" ".join(errors),
+                selected_document_key=selected_document_key,
+                results=existing_results,
+                manual_values=manual_values,
+            ), 400
+
+        all_results = existing_results + new_results
+        save_current_dossier_state(all_results, manual_values)
+        set_last_dossier_document_type(selected_document_key)
+        error_text = " ".join(errors) if errors else ""
+        notice = f"Assistente documenti aggiornato: {len(all_results)} file analizzati." if new_results else ""
+        return render_modulo_form(
+            slug,
+            assistant_error=error_text,
+            assistant_notice=notice,
+            selected_document_key=selected_document_key,
+            results=all_results,
+            manual_values=manual_values,
+        )
+
+    @app.post("/moduli/<slug>/assistente/review")
+    def modulo_assistant_review(slug):
+        try:
+            get_pdf_template_spec(slug)
+        except KeyError:
+            return "Modulo non trovato", 404
+        results, manual_values = load_current_dossier_state()
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        save_current_dossier_state(results, manual_values)
+        return render_modulo_form(
+            slug,
+            assistant_notice="Dati revisione salvati e riapplicati al modulo corrente.",
+            results=results,
+            manual_values=manual_values,
+        )
+
+    @app.post("/moduli/<slug>/assistente/reset")
+    def modulo_assistant_reset(slug):
+        try:
+            get_pdf_template_spec(slug)
+        except KeyError:
+            return "Modulo non trovato", 404
+        clear_current_dossier_state()
+        session.pop("final_check_last_dir", None)
+        return render_modulo_form(slug, assistant_notice="Nuova analisi avviata: assistente documenti azzerato.")
 
     @app.post("/moduli/<slug>/prefill")
     def modulo_prefill(slug):
@@ -6496,6 +6862,54 @@ def run_web(
                 return render_modulo_form(slug, values=request.form.to_dict(flat=True), error=str(exc)), 400
             except KeyError:
                 return f"Errore generazione modulo: {exc}", 400
+
+    @app.get("/moduli/check-finale")
+    def moduli_final_check_get():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_moduli_home_page(error="Carica almeno un documento di supporto prima del check finale."), 400
+        return render_final_check_page(results, manual_values)
+
+    @app.post("/moduli/check-finale")
+    def moduli_final_check_post():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_moduli_home_page(error="Carica almeno un documento di supporto prima del check finale."), 400
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        save_current_dossier_state(results, manual_values)
+        return render_final_check_page(results, manual_values)
+
+    @app.post("/moduli/check-finale/download-all")
+    def moduli_final_check_download_all():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_moduli_home_page(error="Carica almeno un documento di supporto prima del download finale."), 400
+        summary = build_final_check_summary(results, manual_values)
+        if not summary["can_download"]:
+            return render_final_check_page(
+                results,
+                manual_values,
+                error="La pratica non è pronta: correggi prima le mancanze bloccanti evidenziate nel check finale.",
+            ), 400
+        try:
+            practice_dir, zip_path = build_final_check_package(summary, out_dir)
+            session["final_check_last_dir"] = str(practice_dir)
+            return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+        except Exception as exc:
+            return render_final_check_page(results, manual_values, error=f"Errore nella generazione del pacchetto pratica: {exc}"), 400
+
+    @app.post("/moduli/check-finale/open-folder")
+    def moduli_final_check_open_folder():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_moduli_home_page(error="Carica almeno un documento di supporto prima di aprire la cartella pratica."), 400
+        stored_dir = sanitize_pdf_text(session.get("final_check_last_dir", ""))
+        target_dir = Path(stored_dir) if stored_dir and Path(stored_dir).exists() else _get_final_check_output_root(out_dir)
+        try:
+            open_local_folder(target_dir)
+            return render_final_check_page(results, manual_values, notice=f"Cartella pratica aperta: {target_dir}")
+        except Exception as exc:
+            return render_final_check_page(results, manual_values, error=f"Impossibile aprire la cartella pratica: {exc}"), 400
 
     @app.post("/genera")
     def genera():
