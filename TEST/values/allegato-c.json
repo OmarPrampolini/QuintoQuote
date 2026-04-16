@@ -1,0 +1,22 @@
+{
+  "data_modulo": "16/04/2026",
+  "importo_erogato": "35.674,87",
+  "importo_globale_ceduto": "45.120,00",
+  "spese_complessive": "0,00",
+  "interessi_complessivi": "9.445,13",
+  "tan": "4,86",
+  "isc_taeg": "4,98",
+  "numero_rate_estinguibili": "120",
+  "importo_rata_estinzione": "376,00",
+  "garanzia_assicurativa": "Polizza demo credito e morte n. 2026-001",
+  "revoca_finanziamento_importo": "220,00",
+  "revoca_finanziamento_scadenza": "31/12/2030",
+  "revoca_finanziamento_contratto": "Finanziaria Estinzione Demo S.p.A.",
+  "dipendente_nome_cognome": "Mario Rossi",
+  "dipendente_nascita_luogo": "Roma",
+  "dipendente_nascita_provincia": "RM",
+  "dipendente_nascita_data": "15/05/1980",
+  "dipendente_codice_fiscale": "RSSMRA80E15H501Z",
+  "dipendente_in_servizio_presso": "Ministero dell'Economia e delle Finanze",
+  "dipendente_ente_appartenenza": "Ragioneria Territoriale dello Stato di Roma"
+}
