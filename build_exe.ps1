@@ -38,6 +38,39 @@ function Resolve-TesseractRoot {
     return ""
 }
 
+function Assert-TrustedModelSource([string]$Url, [string]$Name) {
+    $uri = [System.Uri]$Url
+    if ($uri.Scheme -ne "https") {
+        throw "Origine non valida per ${Name}: è richiesto HTTPS."
+    }
+    if ($uri.Host -ne "raw.githubusercontent.com") {
+        throw "Origine non valida per ${Name}: host non autorizzato ($($uri.Host))."
+    }
+    $expectedPath = "/tesseract-ocr/tessdata_fast/main/$Name"
+    if ($uri.AbsolutePath -ne $expectedPath) {
+        throw "Origine non valida per ${Name}: percorso inatteso ($($uri.AbsolutePath))."
+    }
+}
+
+function Install-TessdataModel([string]$Url, [string]$TargetFile, [string]$ExpectedSha256) {
+    $name = Split-Path -Leaf $TargetFile
+    Assert-TrustedModelSource -Url $Url -Name $name
+
+    $tempFile = "$TargetFile.download"
+    if (Test-Path $tempFile) {
+        Remove-Item -LiteralPath $tempFile -Force
+    }
+
+    Invoke-WebRequest -Uri $Url -OutFile $tempFile -UseBasicParsing
+    $actualSha256 = (Get-FileHash -LiteralPath $tempFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+        Remove-Item -LiteralPath $tempFile -Force
+        throw "Hash SHA-256 non valida per $name. Attesa: $ExpectedSha256 - Ottenuta: $actualSha256"
+    }
+
+    Move-Item -LiteralPath $tempFile -Destination $TargetFile -Force
+}
+
 function Copy-TesseractBundle([string]$SourceRoot, [string]$DestinationRoot) {
     if (-not $SourceRoot) {
         throw "Tesseract OCR non trovato. Installa Tesseract oppure imposta QUINTOQUOTE_TESSERACT_PATH."
@@ -67,17 +100,29 @@ function Copy-TesseractBundle([string]$SourceRoot, [string]$DestinationRoot) {
     }
 
     $requiredModels = @(
-        @{ Name = "eng.traineddata"; Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata" },
-        @{ Name = "ita.traineddata"; Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/ita.traineddata" },
-        @{ Name = "osd.traineddata"; Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/osd.traineddata" }
+        @{
+            Name = "eng.traineddata"
+            Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata"
+            Sha256 = "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+        },
+        @{
+            Name = "ita.traineddata"
+            Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/ita.traineddata"
+            Sha256 = "b8f89e1e785118dac4d51ae042c029a64edb5c3ee42ef73027a6d412748d8827"
+        },
+        @{
+            Name = "osd.traineddata"
+            Url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/osd.traineddata"
+            Sha256 = "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+        }
     )
     foreach ($model in $requiredModels) {
         $targetFile = Join-Path $destTessdata $model.Name
         if (Test-Path $targetFile) {
             continue
         }
-        Write-Step "Scarico $($model.Name) per il bundle OCR"
-        Invoke-WebRequest -Uri $model.Url -OutFile $targetFile -UseBasicParsing
+        Write-Step "Scarico e verifico $($model.Name) per il bundle OCR"
+        Install-TessdataModel -Url $model.Url -TargetFile $targetFile -ExpectedSha256 $model.Sha256
     }
 
     if (-not (Test-Path (Join-Path $destTessdata "ita.traineddata"))) {
