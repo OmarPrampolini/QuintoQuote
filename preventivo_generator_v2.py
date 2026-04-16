@@ -17,6 +17,7 @@ import argparse
 import atexit
 from calendar import monthrange
 import html
+import io
 import json
 import os
 import re
@@ -38,6 +39,14 @@ try:
     import fitz
 except Exception:
     fitz = None
+
+try:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+except Exception:
+    Image = None
+    ImageEnhance = None
+    ImageFilter = None
+    ImageOps = None
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -2185,6 +2194,12 @@ def require_pymupdf():
     return fitz
 
 
+def require_pillow():
+    if Image is None or ImageEnhance is None or ImageFilter is None or ImageOps is None:
+        raise RuntimeError("Pillow non installato. Esegui: pip install pillow")
+    return Image, ImageEnhance, ImageFilter, ImageOps
+
+
 def build_pdf_template_output_path(spec: PdfTemplateSpec, values: dict[str, str], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     identifier = sanitize_filename(values.get(spec.filename_field, "")) or spec.output_prefix
@@ -2394,6 +2409,8 @@ _DOSSIER_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 _DOSSIER_SUPPORTED_EXTENSIONS = _DOSSIER_PDF_EXTENSIONS | _DOSSIER_IMAGE_EXTENSIONS
 _OCR_TRIGGER_TEXT_LENGTH = 80
 _LOW_TEXT_WARNING_LENGTH = 50
+_OCR_MIN_LONG_EDGE = 2200
+_OCR_MERGE_CANDIDATE_LIMIT = 3
 _ALLOWED_INSTALLMENT_COUNTS = {48, 60, 72, 84, 96, 108, 120}
 _TESSERACT_CANDIDATE_PATHS = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -2674,6 +2691,199 @@ def _normalize_search_text(text: str) -> str:
     return text.strip()
 
 
+def _merge_text_fragments(*texts: str) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        normalized = _normalize_search_text(text)
+        if not normalized:
+            continue
+        for raw_line in normalized.splitlines():
+            line = sanitize_pdf_text(raw_line)
+            if not line:
+                continue
+            key = re.sub(r"\s+", " ", line).strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _score_ocr_text(text: str, expected_document_key: str = "") -> int:
+    normalized = _normalize_search_text(text)
+    if not normalized:
+        return 0
+    score = len(normalized)
+    lowered = normalized.lower()
+    expected = _DOCUMENT_TYPE_DEF_MAP.get(expected_document_key)
+    if expected is not None:
+        score += sum(1 for keyword in expected.keywords if keyword in lowered) * 120
+    signal_patterns = (
+        r"\b[A-Z0-9]{16}\b",
+        r"\bIT\d{2}[A-Z0-9]{23}\b",
+        r"\b\d{2}/\d{2}/\d{4}\b",
+        r"\b(?:tan|taeg|teg|noipa|cedolino|contratto|rata|durata|quinto cedibile)\b",
+        r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b",
+    )
+    signal_hits = 0
+    for pattern in signal_patterns:
+        signal_hits += len(re.findall(pattern, normalized, flags=re.IGNORECASE))
+    score += min(signal_hits, 24) * 35
+    return score
+
+
+def _ocr_attempt_profiles(expected_document_key: str = "") -> tuple[tuple[str, str], ...]:
+    if expected_document_key == "contratto_finanziamento":
+        return (
+            ("ita+eng", "6"),
+            ("ita+eng", "4"),
+            ("ita+eng", "11"),
+            ("ita", "6"),
+            ("eng", "6"),
+            ("", "6"),
+        )
+    if expected_document_key == "cedolino_noipa":
+        return (
+            ("ita+eng", "6"),
+            ("ita+eng", "4"),
+            ("ita", "6"),
+            ("eng", "6"),
+            ("ita+eng", "11"),
+            ("", "6"),
+        )
+    if expected_document_key in {"carta_identita", "tessera_sanitaria"}:
+        return (
+            ("ita+eng", "6"),
+            ("ita+eng", "11"),
+            ("ita", "11"),
+            ("eng", "11"),
+            ("ita", "6"),
+            ("", "6"),
+        )
+    return (
+        ("ita+eng", "6"),
+        ("ita+eng", "4"),
+        ("ita+eng", "11"),
+        ("ita", "6"),
+        ("eng", "6"),
+        ("", "6"),
+    )
+
+
+def _ocr_resampling_filter():
+    pil_image, _, _, _ = require_pillow()
+    resampling = getattr(pil_image, "Resampling", pil_image)
+    return resampling.LANCZOS
+
+
+def _prepare_ocr_source_image(image: object):
+    pil_image, _, _, pil_ops = require_pillow()
+    prepared = pil_ops.exif_transpose(image)
+    if getattr(prepared, "mode", "") in {"RGBA", "LA"}:
+        background = pil_image.new("RGB", prepared.size, "white")
+        alpha = prepared.getchannel("A")
+        background.paste(prepared.convert("RGB"), mask=alpha)
+        prepared = background
+    elif getattr(prepared, "mode", "") not in {"RGB", "L"}:
+        prepared = prepared.convert("RGB")
+    return prepared
+
+
+def _upscale_for_ocr(image: object):
+    width, height = image.size
+    long_edge = max(width, height)
+    if long_edge <= 0 or long_edge >= _OCR_MIN_LONG_EDGE:
+        return image.copy()
+    scale = _OCR_MIN_LONG_EDGE / float(long_edge)
+    new_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+    return image.resize(new_size, _ocr_resampling_filter())
+
+
+def _compute_otsu_threshold(image: object) -> int:
+    histogram = image.histogram()[:256]
+    total = sum(histogram)
+    if total <= 0:
+        return 180
+    weighted_total = sum(index * count for index, count in enumerate(histogram))
+    weight_background = 0
+    weighted_background = 0
+    best_threshold = 180
+    best_variance = -1.0
+    for index, count in enumerate(histogram):
+        weight_background += count
+        if weight_background == 0:
+            continue
+        weight_foreground = total - weight_background
+        if weight_foreground == 0:
+            break
+        weighted_background += index * count
+        mean_background = weighted_background / weight_background
+        mean_foreground = (weighted_total - weighted_background) / weight_foreground
+        variance = weight_background * weight_foreground * (mean_background - mean_foreground) ** 2
+        if variance > best_variance:
+            best_variance = variance
+            best_threshold = index
+    return best_threshold
+
+
+def _binarize_ocr_image(image: object, threshold_offset: int = 0):
+    threshold = _compute_otsu_threshold(image) + threshold_offset
+    threshold = max(60, min(220, threshold))
+    return image.point(lambda pixel: 255 if pixel >= threshold else 0, mode="L")
+
+
+def _build_ocr_image_variants(image: object) -> list[tuple[str, object]]:
+    _, pil_enhance, pil_filter, pil_ops = require_pillow()
+    prepared = _prepare_ocr_source_image(image)
+    gray = pil_ops.autocontrast(_upscale_for_ocr(pil_ops.grayscale(prepared)), cutoff=1)
+    denoised = gray.filter(pil_filter.MedianFilter(size=3))
+    sharpened = denoised.filter(pil_filter.UnsharpMask(radius=1.4, percent=180, threshold=2))
+    boosted = pil_enhance.Contrast(sharpened).enhance(1.8)
+    binary = _binarize_ocr_image(boosted)
+    binary_soft = _binarize_ocr_image(pil_enhance.Contrast(gray).enhance(1.35), threshold_offset=-8)
+    return [
+        ("gray", gray),
+        ("sharpened", sharpened),
+        ("boosted", boosted),
+        ("binary", binary),
+        ("binary_soft", binary_soft),
+    ]
+
+
+def _ocr_text_from_image_object(image: object, expected_document_key: str = "") -> str:
+    candidates: list[tuple[int, str, str]] = []
+    errors: list[str] = []
+    for variant_name, variant_image in _build_ocr_image_variants(image):
+        input_path = _new_runtime_temp_path(".png")
+        try:
+            variant_image.save(str(input_path), format="PNG")
+            text = _run_tesseract_ocr(input_path, expected_document_key=expected_document_key)
+            score = _score_ocr_text(text, expected_document_key)
+            if score > 0:
+                candidates.append((score, variant_name, text))
+        except RuntimeError as exc:
+            errors.append(f"{variant_name}: {exc}")
+        finally:
+            if input_path.exists():
+                input_path.unlink(missing_ok=True)
+    if not candidates:
+        if errors:
+            raise RuntimeError(f"OCR non riuscito: {errors[-1]}")
+        raise RuntimeError("OCR non riuscito: nessun testo riconosciuto dal file.")
+    candidates.sort(key=lambda item: (item[0], len(_normalize_search_text(item[2]))), reverse=True)
+    best_score = candidates[0][0]
+    selected_texts: list[str] = []
+    for score, _, text in candidates:
+        if selected_texts and score < max(140, int(best_score * 0.55)):
+            continue
+        selected_texts.append(text)
+        if len(selected_texts) >= _OCR_MERGE_CANDIDATE_LIMIT:
+            break
+    merged = _merge_text_fragments(*selected_texts)
+    return merged or candidates[0][2]
+
+
 def is_supported_dossier_file(filename: str) -> bool:
     return Path(filename or "").suffix.lower() in _DOSSIER_SUPPORTED_EXTENSIONS
 
@@ -2899,6 +3109,84 @@ def _search_row_group(
     return ""
 
 
+def _extract_standard_financing_contract_text_fallback_fields(text: str) -> dict[str, str]:
+    normalized = _normalize_search_text(text)
+    lowered = normalized.lower()
+    fields: dict[str, str] = {}
+
+    if "delegazione di pagamento" in lowered:
+        fields["loan_type"] = "Delegazione di Pagamento"
+    elif "cessione" in lowered and "quinto" in lowered:
+        fields["loan_type"] = "Cessione del Quinto"
+
+    first_name = _search_first_group(r"(?im)^\s*nome\s*[:\-]?\s*([^\n]{2,80})$", normalized, flags=re.IGNORECASE | re.MULTILINE)
+    if not first_name:
+        first_name = _search_first_group(r"(?is)\bnome\b\s*[:\-]?\s*([A-ZÀ-ÿ' ]{2,80}?)(?:\s+\bcognome\b|\n)", normalized)
+    last_name = _search_first_group(r"(?im)^\s*cognome\s*[:\-]?\s*([^\n]{2,80})$", normalized, flags=re.IGNORECASE | re.MULTILINE)
+    if not last_name:
+        last_name = _search_first_group(r"(?is)\bcognome\b\s*[:\-]?\s*([A-ZÀ-ÿ' ]{2,80}?)(?:\s+\bnata?\/?o?\b|\s+\bnato\/?a?\b|\n)", normalized)
+    full_name = _normalize_person_name(first_name, last_name)
+    if full_name and not _reject_extracted_value("full_name", full_name):
+        fields["full_name"] = full_name
+
+    fallback_patterns: dict[str, tuple[str, ...]] = {
+        "lender_name": (
+            r"(?im)^\s*finanziatore\s*[:\-]?\s*([^\n]{3,120})$",
+            r"(?im)^\s*societ[aà]\s+erogante\s*[:\-]?\s*([^\n]{3,120})$",
+        ),
+        "contract_number": (
+            r"(?im)(?:nr[°o]?\s*contratto|numero\s+contratto|n[°o]?\s*contratto)\s*[:\-]?\s*([A-Z0-9\/\.-]{3,40})",
+            r"(?im)n[°o]?\s*pratica\s*[:\-]?\s*([A-Z0-9\/\.-]{3,40})",
+        ),
+        "contract_date": (
+            rf"(?im)(?:data\s+contratto|conclusione\s+del\s+contratto)\s*[:\-]?\s*{_DATE_CAPTURE}",
+        ),
+        "loan_amount": (
+            rf"(?im)(?:capitale\s+finanziato|importo\s+finanziamento)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        ),
+        "net_disbursed": (
+            rf"(?im)(?:importo\s+totale\s+del\s+credito|importo\s+erogato|netto\s+erogato)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        ),
+        "total_ceded": (
+            rf"(?im)(?:importo\s+totale\s+dovuto(?:\s+dal\s+consumatore)?|totale\s+da\s+rimborsare)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        ),
+        "monthly_installment": (
+            rf"(?im)(?:importo\s+rata\s+mensile|importo\s+di\s+ciascuna\s+rata|rata\s+mensile)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        ),
+        "installment_count": (
+            r"(?im)(?:numero\s+rate\s+mensili\s+da\s+pagare|numero\s+rate|durata(?:\s+contrattuale)?)\s*[:\-]?\s*(\d{1,3})(?:\s*mesi)?",
+        ),
+        "tan": (
+            r"(?im)(?:tan|tasso\s+debitore\s+annuo\s+nominale)\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+        ),
+        "taeg": (
+            r"(?im)(?:taeg|tasso\s+annuo\s+effettivo\s+globale)\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,3})?)",
+        ),
+        "interest_total": (
+            rf"(?im)(?:interessi\s+complessivi|interessi\s+totali)\s*[:\-]?\s*{_MONEY_CAPTURE}",
+        ),
+        "borrower_iban": (
+            r"(?im)(?:codice\s+iban|iban)\s*[:\-]?\s*(IT\d{2}(?:\s?[A-Z0-9]){23})",
+        ),
+    }
+
+    for field_name, patterns in fallback_patterns.items():
+        if fields.get(field_name):
+            continue
+        for pattern in patterns:
+            raw_value = _search_first_group(pattern, normalized)
+            cleaned = _clean_extracted_value(field_name, raw_value)
+            if cleaned and not _reject_extracted_value(field_name, cleaned):
+                fields[field_name] = cleaned
+                break
+
+    if fields.get("loan_amount") and not fields.get("net_disbursed"):
+        fields["net_disbursed"] = fields["loan_amount"]
+    if fields.get("net_disbursed") and not fields.get("loan_amount"):
+        fields["loan_amount"] = fields["net_disbursed"]
+    return fields
+
+
 def _extract_standard_financing_contract_fields(pdf_bytes: bytes, text: str) -> dict[str, str]:
     fitz_mod = require_pymupdf()
     doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
@@ -3010,6 +3298,10 @@ def _extract_standard_financing_contract_fields(pdf_bytes: bytes, text: str) -> 
             cleaned = _clean_extracted_value(field_name, raw)
             if cleaned and not _reject_extracted_value(field_name, cleaned):
                 fields[field_name] = cleaned
+
+        text_fallback_fields = _extract_standard_financing_contract_text_fallback_fields(text)
+        for field_name, value in text_fallback_fields.items():
+            fields.setdefault(field_name, value)
         return fields
     finally:
         doc.close()
@@ -3089,8 +3381,12 @@ def _extract_specialized_document_fields(
 ) -> tuple[Optional[str], Optional[str], dict[str, str]]:
     if forced_document_key == "cedolino_noipa":
         return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_cedolino_noipa_fields(normalized_text)
-    if forced_document_key == "contratto_finanziamento" and _is_pdf_dossier_file(filename):
-        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_standard_financing_contract_fields(pdf_bytes, normalized_text)
+    if forced_document_key == "contratto_finanziamento":
+        if _is_pdf_dossier_file(filename):
+            fields = _extract_standard_financing_contract_fields(pdf_bytes, normalized_text)
+        else:
+            fields = _extract_standard_financing_contract_text_fallback_fields(normalized_text)
+        return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, fields
     if forced_document_key == "carta_identita":
         return forced_document_key, _DOCUMENT_TYPE_DEF_MAP[forced_document_key].label, _extract_carta_identita_fields(normalized_text)
     if forced_document_key == "tessera_sanitaria":
@@ -3100,6 +3396,8 @@ def _extract_specialized_document_fields(
         return "cedolino_noipa", _DOCUMENT_TYPE_DEF_MAP["cedolino_noipa"].label, _extract_cedolino_noipa_fields(normalized_text)
     if _is_pdf_dossier_file(filename) and _looks_like_standard_financing_contract(normalized_text):
         return "contratto_finanziamento", _DOCUMENT_TYPE_DEF_MAP["contratto_finanziamento"].label, _extract_standard_financing_contract_fields(pdf_bytes, normalized_text)
+    if _looks_like_standard_financing_contract(normalized_text):
+        return "contratto_finanziamento", _DOCUMENT_TYPE_DEF_MAP["contratto_finanziamento"].label, _extract_standard_financing_contract_text_fallback_fields(normalized_text)
     if _looks_like_carta_identita(normalized_text):
         return "carta_identita", _DOCUMENT_TYPE_DEF_MAP["carta_identita"].label, _extract_carta_identita_fields(normalized_text)
     if _looks_like_tessera_sanitaria(normalized_text):
@@ -3223,24 +3521,29 @@ def _extract_rate_duration_expression_fields(text: str) -> dict[str, str]:
     return extracted
 
 
-def _run_tesseract_ocr(input_path: Path) -> str:
+def _run_tesseract_ocr(input_path: Path, expected_document_key: str = "") -> str:
     tesseract_cmd = find_tesseract_executable()
     if not tesseract_cmd:
         raise RuntimeError(
             "OCR non disponibile: installa Tesseract OCR oppure imposta QUINTOQUOTE_TESSERACT_PATH."
         )
     tessdata_dir = find_tesseract_data_dir(tesseract_cmd)
-
-    attempts = (
-        ("ita+eng", "6"),
-        ("ita+eng", "11"),
-        ("ita", "6"),
-        ("eng", "6"),
-        ("", "6"),
-    )
+    attempts = _ocr_attempt_profiles(expected_document_key)
     errors: list[str] = []
     for language, psm in attempts:
-        command = [tesseract_cmd, str(input_path), "stdout", "--psm", psm, "--oem", "1"]
+        command = [
+            tesseract_cmd,
+            str(input_path),
+            "stdout",
+            "--psm",
+            psm,
+            "--oem",
+            "1",
+            "-c",
+            "preserve_interword_spaces=1",
+            "-c",
+            "user_defined_dpi=300",
+        ]
         if tessdata_dir:
             command.extend(["--tessdata-dir", tessdata_dir])
         if language:
@@ -3265,53 +3568,83 @@ def _run_tesseract_ocr(input_path: Path) -> str:
     raise RuntimeError("OCR non riuscito: nessun testo riconosciuto dal file.")
 
 
-def _safe_ocr_image_text_from_bytes(data: bytes, suffix: str) -> str:
+def _safe_ocr_image_text_from_bytes(data: bytes, suffix: str, expected_document_key: str = "") -> str:
+    preprocessing_error: Optional[Exception] = None
+    try:
+        pil_image, _, _, _ = require_pillow()
+        with pil_image.open(io.BytesIO(data)) as image:
+            image.load()
+            return _ocr_text_from_image_object(image, expected_document_key=expected_document_key)
+    except Exception as exc:
+        preprocessing_error = exc
+
     suffix = suffix if suffix.startswith(".") else f".{suffix}"
     input_path = _new_runtime_temp_path(suffix)
     try:
         input_path.write_bytes(data)
-        return _run_tesseract_ocr(input_path)
+        return _run_tesseract_ocr(input_path, expected_document_key=expected_document_key)
+    except RuntimeError as exc:
+        if preprocessing_error is not None:
+            raise RuntimeError(
+                "OCR non riuscito: "
+                f"pipeline preprocess fallita ({sanitize_pdf_text(preprocessing_error)}); "
+                f"tentativo diretto fallito ({sanitize_pdf_text(exc)})."
+            )
+        raise
     finally:
         if input_path.exists():
             input_path.unlink(missing_ok=True)
 
 
-def _safe_ocr_pdf_text_from_bytes(data: bytes) -> tuple[str, int]:
+def _safe_ocr_pdf_text_from_bytes(data: bytes, expected_document_key: str = "") -> tuple[str, int]:
     fitz_mod = require_pymupdf()
     doc = fitz_mod.open(stream=data, filetype="pdf")
     try:
         texts: list[str] = []
-        temp_paths: list[Path] = []
-        try:
-            for index, page in enumerate(doc, start=1):
-                pixmap = page.get_pixmap(matrix=fitz_mod.Matrix(2.5, 2.5), alpha=False)
-                image_path = _new_runtime_temp_path(".png")
-                temp_paths.append(image_path)
-                pixmap.save(str(image_path))
-                page_text = _run_tesseract_ocr(image_path)
-                if page_text:
-                    texts.append(page_text)
-        finally:
-            for temp_path in temp_paths:
-                if temp_path.exists():
-                    temp_path.unlink(missing_ok=True)
+        for page in doc:
+            pixmap = page.get_pixmap(matrix=fitz_mod.Matrix(3.0, 3.0), alpha=False)
+            page_text = _safe_ocr_image_text_from_bytes(
+                pixmap.tobytes("png"),
+                ".png",
+                expected_document_key=expected_document_key,
+            )
+            if page_text:
+                texts.append(page_text)
         return "\n\n".join(texts), doc.page_count
     finally:
         doc.close()
 
 
-def _extract_text_from_supported_document(filename: str, data: bytes) -> tuple[str, int, list[str]]:
+def _extract_text_from_supported_document(filename: str, data: bytes, expected_document_key: str = "") -> tuple[str, int, list[str]]:
     warnings: list[str] = []
     if _is_pdf_dossier_file(filename):
         text, page_count = _safe_pdf_text_from_bytes(data)
         normalized = _normalize_search_text(text)
-        if len(normalized) < _OCR_TRIGGER_TEXT_LENGTH:
+        expected_document_key = sanitize_pdf_text(expected_document_key)
+        expected_keyword_hits = (
+            _count_document_keyword_hits(normalized, filename, expected_document_key)
+            if expected_document_key
+            else 0
+        )
+        should_try_ocr = len(normalized) < _OCR_TRIGGER_TEXT_LENGTH
+        if expected_document_key and expected_keyword_hits < 2:
+            should_try_ocr = True
+        if should_try_ocr:
             try:
-                ocr_text, _ = _safe_ocr_pdf_text_from_bytes(data)
+                ocr_text, _ = _safe_ocr_pdf_text_from_bytes(data, expected_document_key=expected_document_key)
                 ocr_normalized = _normalize_search_text(ocr_text)
-                if len(ocr_normalized) > len(normalized):
-                    text = "\n\n".join(part for part in (text, ocr_text) if _normalize_search_text(part))
-                    warnings.append("OCR locale applicato: PDF scannerizzato o poco testuale.")
+                ocr_keyword_hits = (
+                    _count_document_keyword_hits(ocr_normalized, filename, expected_document_key)
+                    if expected_document_key
+                    else 0
+                )
+                if ocr_normalized and (
+                    len(ocr_normalized) > len(normalized)
+                    or ocr_keyword_hits > expected_keyword_hits
+                    or len(normalized) < _OCR_TRIGGER_TEXT_LENGTH
+                ):
+                    text = _merge_text_fragments(text, ocr_text)
+                    warnings.append("OCR locale multi-pass applicato: migliorata la lettura del PDF.")
                     normalized = _normalize_search_text(text)
             except RuntimeError as exc:
                 warnings.append(str(exc))
@@ -3321,8 +3654,12 @@ def _extract_text_from_supported_document(filename: str, data: bytes) -> tuple[s
 
     if _is_image_dossier_file(filename):
         try:
-            text = _safe_ocr_image_text_from_bytes(data, Path(filename).suffix.lower())
-            warnings.append("OCR locale applicato: immagine analizzata con Tesseract.")
+            text = _safe_ocr_image_text_from_bytes(
+                data,
+                Path(filename).suffix.lower(),
+                expected_document_key=expected_document_key,
+            )
+            warnings.append("OCR locale multi-pass applicato: immagine analizzata con preprocessing e Tesseract.")
             normalized = _normalize_search_text(text)
             if len(normalized) < _LOW_TEXT_WARNING_LENGTH:
                 warnings.append("Testo OCR limitato: verifica i valori prima di usare il prefill.")
@@ -3579,7 +3916,11 @@ def _count_document_keyword_hits(text: str, filename: str, document_key: str) ->
 
 
 def extract_document_result(filename: str, raw_bytes: bytes, expected_document_key: str = "") -> DocumentExtractionResult:
-    text, page_count, warnings = _extract_text_from_supported_document(filename, raw_bytes)
+    text, page_count, warnings = _extract_text_from_supported_document(
+        filename,
+        raw_bytes,
+        expected_document_key=expected_document_key,
+    )
     normalized = _normalize_search_text(text)
     detected_key, detected_label, detected_hits = _classify_document_text(normalized, filename)
     expected_document_key = sanitize_pdf_text(expected_document_key)
