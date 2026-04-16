@@ -52,9 +52,48 @@ function Assert-TrustedModelSource([string]$Url, [string]$Name) {
     }
 }
 
+function Get-TessdataCacheRoots {
+    $roots = @()
+    $localCache = Join-Path $env:LOCALAPPDATA "QuintoQuote\build-cache\tessdata_fast"
+    $roots += $localCache
+    $tempPattern = Join-Path $env:TEMP "qq-tessdata-*"
+    $roots += Get-ChildItem -Path $tempPattern -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+    return $roots | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+}
+
+function Try-RestoreCachedModel([string]$Name, [string]$TargetFile, [string]$ExpectedSha256) {
+    foreach ($root in Get-TessdataCacheRoots) {
+        $candidate = Join-Path $root $Name
+        if (-not (Test-Path $candidate)) {
+            continue
+        }
+        try {
+            $candidateSha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+                continue
+            }
+            Copy-Item -LiteralPath $candidate -Destination $TargetFile -Force
+            return $true
+        } catch {
+            continue
+        }
+    }
+    return $false
+}
+
+function Save-ModelToCache([string]$SourceFile, [string]$Name) {
+    $cacheRoot = Join-Path $env:LOCALAPPDATA "QuintoQuote\build-cache\tessdata_fast"
+    New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+    Copy-Item -LiteralPath $SourceFile -Destination (Join-Path $cacheRoot $Name) -Force
+}
+
 function Install-TessdataModel([string]$Url, [string]$TargetFile, [string]$ExpectedSha256) {
     $name = Split-Path -Leaf $TargetFile
     Assert-TrustedModelSource -Url $Url -Name $name
+
+    if (Try-RestoreCachedModel -Name $name -TargetFile $TargetFile -ExpectedSha256 $ExpectedSha256) {
+        return
+    }
 
     $tempFile = "$TargetFile.download"
     if (Test-Path $tempFile) {
@@ -69,6 +108,7 @@ function Install-TessdataModel([string]$Url, [string]$TargetFile, [string]$Expec
     }
 
     Move-Item -LiteralPath $tempFile -Destination $TargetFile -Force
+    Save-ModelToCache -SourceFile $TargetFile -Name $name
 }
 
 function Copy-TesseractBundle([string]$SourceRoot, [string]$DestinationRoot) {
@@ -130,6 +170,31 @@ function Copy-TesseractBundle([string]$SourceRoot, [string]$DestinationRoot) {
     }
 }
 
+function Copy-TemplateDocs([string]$RepoRoot, [string]$DestinationRoot) {
+    $sourceDocs = Join-Path $RepoRoot "docs"
+    if (-not (Test-Path $sourceDocs)) {
+        throw "Cartella docs non trovata: $sourceDocs"
+    }
+
+    $destDocs = Join-Path $DestinationRoot "docs"
+    New-Item -ItemType Directory -Force -Path $destDocs | Out-Null
+
+    $templateFiles = @(
+        "Allegato C Creditonet (1).pdf",
+        "AllegatoE determina positiva ATC (1) (3).pdf",
+        "frontespizio_banche_finanziarie.pdf",
+        "frontespizio_integrativo_banche_finanziarie.pdf"
+    )
+
+    foreach ($fileName in $templateFiles) {
+        $sourceFile = Join-Path $sourceDocs $fileName
+        if (-not (Test-Path $sourceFile)) {
+            throw "Template PDF mancante: $sourceFile"
+        }
+        Copy-Item -LiteralPath $sourceFile -Destination $destDocs -Force
+    }
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $repoRoot
 
@@ -140,7 +205,9 @@ if (-not (Test-Path $python)) {
 
 $docsNeeded = @(
     (Join-Path $repoRoot "docs\Allegato C Creditonet (1).pdf"),
-    (Join-Path $repoRoot "docs\AllegatoE determina positiva ATC (1) (3).pdf")
+    (Join-Path $repoRoot "docs\AllegatoE determina positiva ATC (1) (3).pdf"),
+    (Join-Path $repoRoot "docs\frontespizio_banche_finanziarie.pdf"),
+    (Join-Path $repoRoot "docs\frontespizio_integrativo_banche_finanziarie.pdf")
 )
 foreach ($path in $docsNeeded) {
     if (-not (Test-Path $path)) {
@@ -174,6 +241,9 @@ $distRoot = Join-Path $repoRoot "dist\QuintoQuote"
 if (-not (Test-Path (Join-Path $distRoot "QuintoQuote.exe"))) {
     throw "Eseguibile non trovato dopo la build."
 }
+
+Write-Step "Copio i template PDF nel pacchetto"
+Copy-TemplateDocs -RepoRoot $repoRoot -DestinationRoot $distRoot
 
 if (-not $SkipOcrBundle) {
     Write-Step "Aggiungo OCR locale al pacchetto"

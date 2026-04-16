@@ -14,6 +14,7 @@ Modalità:
 from __future__ import annotations
 
 import argparse
+import atexit
 from calendar import monthrange
 import html
 import json
@@ -222,6 +223,90 @@ def _default_runtime_temp_dir() -> Path:
     if _is_frozen_runtime():
         return _get_user_data_root() / ".quintoquote_tmp"
     return Path(__file__).resolve().parent / ".quintoquote_tmp"
+
+
+def _runtime_state_path() -> Path:
+    return _get_user_data_root() / "runtime_state.json"
+
+
+def _load_runtime_state() -> dict[str, object]:
+    path = _runtime_state_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_runtime_state(host: str, port: int) -> None:
+    path = _runtime_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "host": host,
+        "port": port,
+        "exe": str(Path(sys.executable).resolve()),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _clear_runtime_state(expected_pid: int | None = None) -> None:
+    path = _runtime_state_path()
+    if not path.exists():
+        return
+    if expected_pid is not None:
+        state = _load_runtime_state()
+        try:
+            current_pid = int(state.get("pid", 0) or 0)
+        except Exception:
+            current_pid = 0
+        if current_pid and current_pid != expected_pid:
+            return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _is_local_server_reachable(host: str, port: int, timeout: float = 0.35) -> bool:
+    if not host or not (1 <= int(port or 0) <= 65535):
+        return False
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _existing_runtime_url() -> str:
+    state = _load_runtime_state()
+    if not state:
+        return ""
+    try:
+        pid = int(state.get("pid", 0) or 0)
+        port = int(state.get("port", 0) or 0)
+    except Exception:
+        _clear_runtime_state()
+        return ""
+    host = str(state.get("host", "127.0.0.1") or "127.0.0.1")
+    if not _pid_is_running(pid) or not _is_local_server_reachable(host, port):
+        _clear_runtime_state()
+        return ""
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    return f"http://{display_host}:{port}"
 
 
 def _resolve_pdf_template_dir() -> Path:
@@ -2196,7 +2281,9 @@ def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_pa
     fitz_mod = require_pymupdf()
     template_path = _PDF_TEMPLATE_DIR / spec.template_name
     if not template_path.exists():
-        raise FileNotFoundError(f"Template non trovato: {template_path.name}")
+        raise FileNotFoundError(
+            f"Template non trovato: {template_path.name}. Percorso cercato: {template_path}"
+        )
 
     doc = fitz_mod.open(template_path)
     doc.need_appearances(True)
@@ -7219,6 +7306,7 @@ def run_web(
     def app_exit():
         if not _is_frozen_runtime():
             return redirect(url_for("home"))
+        _clear_runtime_state(expected_pid=os.getpid())
         threading.Timer(0.4, lambda: os._exit(0)).start()
         return (
             "<html><head><meta charset='utf-8'><title>QuintoQuote</title></head>"
@@ -7247,6 +7335,9 @@ def run_web(
         if show_start_hint:
             print("Suggerimento: dopo pip install -e . puoi avviare tutto con QuintoQuote start.")
         print("Premi CTRL+C per chiudere il server.\n")
+    if _is_frozen_runtime():
+        _save_runtime_state(host, port)
+        atexit.register(lambda: _clear_runtime_state(expected_pid=os.getpid()))
     app.run(host=host, port=port, debug=False)
 
 # =========================
@@ -7303,6 +7394,17 @@ def main():
 
     try:
         if args.web:
+            if _is_frozen_runtime():
+                existing_url = _existing_runtime_url()
+                if existing_url:
+                    if used_start_alias:
+                        try:
+                            webbrowser.open(existing_url, new=2)
+                        except Exception:
+                            pass
+                    print("\nQuintoQuote è già in esecuzione.")
+                    print(f"Apri l'applicazione qui: {existing_url}\n")
+                    return
             selected_port = _pick_available_port(args.host, args.port) if (used_start_alias or _is_frozen_runtime()) else args.port
             run_web(
                 out_dir,
