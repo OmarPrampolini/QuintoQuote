@@ -185,20 +185,24 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 | Logo agente | Opzionale, visibile nell'header del PDF |
 | Multi-scenario | Piu combinazioni rata/durata nello stesso documento |
 | Storico PDF | Tutti i preventivi generati, scaricabili dalla UI |
-| Modulistica MEF | Compilatore guidato per Allegato E e Allegato C Flussi Finanziari |
+| Modulistica MEF | Compilatore guidato per Allegato E, Allegato C, Frontespizio MEF e Frontespizio Integrativo |
 | Dossier NO AI | Upload PDF, JPG, PNG, OCR locale e prefill moduli |
+| Check Finale Pratica | Verifica completezza, mismatch documentali, coerenze numeriche e pacchetto finale moduli |
 | CLI guidata | Prompt interattivo da terminale |
 | CLI batch | `--non-interactive` per script e automazioni |
 
 ---
 
-## Compilatore Allegati MEF
+## Compilatore Moduli MEF
 
 Nella web UI trovi anche la sezione **Moduli**.
 
 - **Allegato E Delega MEF**: 43 campi mappati sulle prime 2 pagine del template originale.
 - **Allegato C Flussi Finanziari MEF**: 20 campi mappati sul template Creditonet.
+- **Frontespizio Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 49 campi compilabili.
+- **Frontespizio Integrativo Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 26 campi compilabili.
 - **Output diretto in PDF**: compili i campi nella UI e scarichi il modulo gia popolato, mantenendo impaginazione e caselle originali.
+- **Compatibilità XFA**: per i due frontespizi QuintoQuote aggiorna sia il campo visibile sia il `datasets` interno del PDF, per maggiore compatibilità con Adobe Reader e con i flussi MEF/PEC.
 
 I template PDF di partenza vengono letti dalla cartella `docs/`.
 
@@ -215,7 +219,9 @@ Nella web UI trovi anche la sezione **Dossier**.
 - Estrae i campi con regex e anchor text
 - Permette analisi incrementale: aggiungi un documento, poi un altro, poi salvi la revisione e continui sullo stesso dossier
 - Mostra i dati estratti in una schermata di revisione, modificabili prima del prefill
-- Aggrega i dati trovati e precompila Allegato E e Allegato C
+- Aggrega i dati trovati e precompila Allegato E, Allegato C, Frontespizio MEF e Frontespizio Integrativo
+- Include un **Check Finale Pratica** con esito `Pronta`, `Pronta con verifiche` o `Non pronta`
+- Il check finale produce il pacchetto completo dei moduli in ZIP e segnala mismatch anagrafici, documenti mancanti e warning XFA
 - Include parser dedicati per cedolino NoiPA/MEF e contratto di finanziamento/delega in PDF testuale
 - Usa Tesseract OCR in locale come fallback sui PDF scannerizzati e come parser principale per immagini
 - Riconosce anche pattern sintetici OCR tipo `300 euro x 120 mesi` come possibile `rata` + `durata`, con montante derivato automaticamente
@@ -392,7 +398,7 @@ Formato scenario: `rata;durata_mesi;tan;taeg;importo_erogato[;tipo_finanziamento
 - per il lavoro quotidiano usa la web UI
 - usa la CLI non interattiva quando vuoi integrazione, script o automazioni locali
 - usa i `--scenario` se vuoi produrre un unico PDF con piu opzioni di rata/durata
-- usa il Dossier dalla web UI quando devi estrarre dati da documenti e precompilare Allegato E/C
+- usa il Dossier dalla web UI quando devi estrarre dati da documenti e precompilare Allegato E/C e i due frontespizi MEF
 
 ### Esempi utili
 

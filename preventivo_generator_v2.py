@@ -26,6 +26,8 @@ import sys
 import threading
 import uuid
 import webbrowser
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1529,6 +1531,9 @@ class PdfFieldDef:
     default: str = ""
     overlay_rect: Optional[tuple[float, float, float, float]] = None
     overlay_page: int = 0
+    choices: tuple[tuple[str, str], ...] = ()
+    multiline: bool = False
+    xfa_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -1551,10 +1556,80 @@ class PdfTemplateSpec:
     filename_field: str
     button_label: str
     sections: tuple[PdfSectionDef, ...]
+    render_mode: str = "acroform"
 
 
 _PDF_TEMPLATE_DIR = _resolve_pdf_template_dir()
 _DYNAMIC_DEFAULT_TODAY = "__TODAY__"
+_XFA_DATASET_NS = "http://www.xfa.org/schema/xfa-data/1.0/"
+ET.register_namespace("xfa", _XFA_DATASET_NS)
+
+
+def _xfa_widget(name: str) -> str:
+    return f"topmostSubform[0].Page1[0].{name}[0]"
+
+
+_MEF_NOIPA_TYPE_CHOICES = (
+    ("X", "X"),
+    ("B", "B"),
+    ("D", "D"),
+)
+
+_MEF_MONTH_CHOICES = (
+    ("Gennaio", "Gennaio"),
+    ("Febbraio", "Febbraio"),
+    ("Marzo", "Marzo"),
+    ("Aprile", "Aprile"),
+    ("Maggio", "Maggio"),
+    ("Giugno", "Giugno"),
+    ("Luglio", "Luglio"),
+    ("Agosto", "Agosto"),
+    ("Settembre", "Settembre"),
+    ("Ottobre", "Ottobre"),
+    ("Novembre", "Novembre"),
+    ("Dicembre", "Dicembre"),
+)
+
+_MEF_TIPO_PRESTITO_CHOICES = (
+    ("Cessione Credito Net", "Cessione Credito Net"),
+    ("Cessione No Credito Net", "Cessione No Credito Net"),
+    ("Delegazione di Pagamento", "Delegazione di Pagamento"),
+)
+
+_MEF_DOCUMENTO_ALLEGATO_CHOICES = (
+    ("allegato_A1.pdf", "allegato_A1.pdf"),
+    ("allegato_B.pdf", "allegato_B.pdf"),
+    ("allegato_E.pdf", "allegato_E.pdf"),
+    ("B1_creditonet.pdf", "B1_creditonet.pdf"),
+    ("consenso_noipa.pdf", "consenso_noipa.pdf"),
+    ("contratto.pdf", "contratto.pdf"),
+    ("dichiarazione_finanziamento_cessione.pdf", "dichiarazione_finanziamento_cessione.pdf"),
+    ("polizza_assicurativa.pdf", "polizza_assicurativa.pdf"),
+    ("0", "Liberatoria"),
+    ("1", "Dichiarazione per estinzione"),
+    ("documento_identificativo.pdf", "documento_identificativo.pdf"),
+    ("ulteriori_servizi_utili_a_pensione.pdf", "ulteriori_servizi_utili_a_pensione.pdf"),
+    ("rinnovo_60_120_mesi.pdf", "rinnovo_60_120_mesi.pdf"),
+    ("altro.pdf", "altro.pdf"),
+)
+
+_MEF_DOCUMENTO_INTEGRATIVO_CHOICES = (
+    ("Allegato_B_per_Delega", "Allegato_B_per_Delega"),
+    ("0", "Altro (vd. Eventuali comunicazioni alla RTS)"),
+    ("Assegno", "Assegno"),
+    ("Contabile_Bonifico", "Contabile_Bonifico"),
+    ("Conteggio_Estintivo", "Conteggio_Estintivo"),
+    ("Dichiarazione_di_collocamento_a_riposo", "Dichiarazione_di_collocamento_a_riposo"),
+    ("Dichiarazione_per_estinzione", "Dichiarazione_per_estinzione"),
+    ("Estratto_Contributivo_INPS ", "Estratto_Contributivo_INPS"),
+    ("1", "Liberatoria"),
+)
+
+_MEF_ESTINZIONE_CHOICES = (
+    ("Cessione", "Cessione"),
+    ("Delega-Piccolo Prestito-Prestito Doppio", "Delega-Piccolo Prestito-Prestito Doppio"),
+    ("Pignoramento-Alimenti-Recupero Obbligatorio", "Pignoramento-Alimenti-Recupero Obbligatorio-Debito di Stato-Riscatto"),
+)
 
 ALLEGATO_C_SPEC = PdfTemplateSpec(
     key="allegato_c",
@@ -1772,11 +1847,188 @@ ALLEGATO_E_SPEC = PdfTemplateSpec(
     ),
 )
 
+FRONTESPIZIO_BANCHE_SPEC = PdfTemplateSpec(
+    key="frontespizio_banche",
+    slug="frontespizio-banche",
+    label="Frontespizio Banche / Finanziarie MEF",
+    description="Frontespizio ufficiale MEF per banche e finanziarie. Modulo Adobe LiveCycle/XFA: QuintoQuote aggiorna sia i widget visibili sia il dataset interno del PDF.",
+    summary="49 campi compilabili ufficiali, inclusi documenti allegati, estinzioni e riferimenti del contratto.",
+    template_name="frontespizio_banche_finanziarie.pdf",
+    output_prefix="FrontespizioMEF",
+    filename_field="numero_contratto",
+    button_label="Scarica Frontespizio compilato",
+    render_mode="xfa",
+    sections=(
+        PdfSectionDef(
+            title="Ragioneria e Codice NoiPA",
+            icon="🏛️",
+            description="Dati della RTS e codice NoiPA utilizzato nel frontespizio.",
+            fields=(
+                PdfFieldDef("cip", _xfa_widget("cip"), "C.I.P.", "Es. 1234"),
+                PdfFieldDef("nome_sede", _xfa_widget("nome_sede"), "Sede RTS", "Es. Roma"),
+                PdfFieldDef("codice_noipa_tipo", _xfa_widget("codice_noipa_tipo"), "Codice NoiPA - tipo", choices=_MEF_NOIPA_TYPE_CHOICES),
+                PdfFieldDef("codice_noipa_numero", _xfa_widget("codice_noipa_numero"), "Codice NoiPA - numero", "Es. 80226489"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Richiedente",
+            icon="👤",
+            description="Anagrafica e contatti del richiedente riportati in testa al modulo.",
+            fields=(
+                PdfFieldDef("cognome", _xfa_widget("cognome"), "Cognome", "Es. Rossi"),
+                PdfFieldDef("nome", _xfa_widget("nome"), "Nome", "Es. Mario"),
+                PdfFieldDef("codice_fiscale", _xfa_widget("codice_fiscale"), "Codice fiscale", "Es. RSSMRA80A01H501U"),
+                PdfFieldDef("data_di_nascita", _xfa_widget("data_di_nascita"), "Nato il", "GG/MM/AAAA"),
+                PdfFieldDef("luogo_di_nascita", _xfa_widget("luogo_di_nascita"), "Nato a", "Es. Roma"),
+                PdfFieldDef("provincia_di_nascita", _xfa_widget("provincia_di_nascita"), "Prov.", "Es. RM"),
+                PdfFieldDef("email_richiedente", _xfa_widget("email_richiedente"), "Email", "Es. mario.rossi@email.it"),
+                PdfFieldDef("telefono_richiedente", _xfa_widget("telefono_richiedente"), "Telefono", "Es. 3331234567"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Contratto e Prestito",
+            icon="💸",
+            description="Riepilogo del finanziamento indicato nel frontespizio principale.",
+            fields=(
+                PdfFieldDef("societa_erogante", _xfa_widget("societa_erogante"), "Società erogante / descrizione", "Es. Finanziaria XYZ S.p.A.", full_width=True, font_size=9.0),
+                PdfFieldDef("numero_contratto", _xfa_widget("numero_contratto"), "Nr° contratto", "Es. 12345678"),
+                PdfFieldDef("data_contratto", _xfa_widget("data_contratto"), "Data contratto", "GG/MM/AAAA"),
+                PdfFieldDef("decorrenza_contratto", _xfa_widget("decorrenza_contratto"), "Decorrenza", choices=_MEF_MONTH_CHOICES),
+                PdfFieldDef("tipo_prestito", _xfa_widget("tipo_prestito"), "Tipo prestito", choices=_MEF_TIPO_PRESTITO_CHOICES, full_width=True),
+                PdfFieldDef("numero_rate", _xfa_widget("numero_rate"), "Nr° rate", "Es. 120"),
+                PdfFieldDef("rata_mensile", _xfa_widget("rata_mensile"), "Rata mensile €", "Es. 376,00"),
+                PdfFieldDef("TAN", _xfa_widget("TAN"), "T.A.N.", "Es. 4,86"),
+                PdfFieldDef("TEG", _xfa_widget("TEG"), "T.E.G.", "Es. 4,98"),
+                PdfFieldDef("TAEG", _xfa_widget("TAEG"), "T.A.E.G.", "Es. 4,98"),
+                PdfFieldDef("ISC", _xfa_widget("ISC"), "I.S.C.", "Es. 4,98"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Estinzioni",
+            icon="🔁",
+            description="Eventuali finanziamenti o trattenute da estinguere.",
+            fields=(
+                PdfFieldDef("tipologia_estinzione_1", _xfa_widget("tipologia_estinzione_1"), "Tipologia estinzione 1", choices=_MEF_ESTINZIONE_CHOICES, full_width=True),
+                PdfFieldDef("societa_estinzione_1", _xfa_widget("societa_estinzione_1"), "Società estinzione 1", "Es. Finanziaria ABC", full_width=True),
+                PdfFieldDef("rata_estinzione_1", _xfa_widget("rata_estinzione_1"), "Rata mese 1", "Es. 220,00"),
+                PdfFieldDef("tipologia_estinzione_2", _xfa_widget("tipologia_estinzione_2"), "Tipologia estinzione 2", choices=_MEF_ESTINZIONE_CHOICES, full_width=True),
+                PdfFieldDef("societa_estinzione_2", _xfa_widget("societa_estinzione_2"), "Società estinzione 2", "Es. Finanziaria DEF", full_width=True),
+                PdfFieldDef("rata_estinzione_2", _xfa_widget("rata_estinzione_2"), "Rata mese 2", "Es. 150,00"),
+                PdfFieldDef("tipologia_estinzione_3", _xfa_widget("tipologia_estinzione_3"), "Tipologia estinzione 3", choices=_MEF_ESTINZIONE_CHOICES, full_width=True),
+                PdfFieldDef("societa_estinzione_3", _xfa_widget("societa_estinzione_3"), "Società estinzione 3", "Es. INPS / altro", full_width=True),
+                PdfFieldDef("rata_estinzione_3", _xfa_widget("rata_estinzione_3"), "Rata mese 3", "Es. 80,00"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Documenti Allegati",
+            icon="📎",
+            description="Seleziona i documenti allegati richiesti dal frontespizio. I valori corrispondono alle opzioni ufficiali del PDF.",
+            fields=(
+                PdfFieldDef("doc_allegato_1", _xfa_widget("doc_allegato_1"), "Documento allegato 1", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_2", _xfa_widget("doc_allegato_2"), "Documento allegato 2", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_3", _xfa_widget("doc_allegato_3"), "Documento allegato 3", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_4", _xfa_widget("doc_allegato_4"), "Documento allegato 4", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_5", _xfa_widget("doc_allegato_5"), "Documento allegato 5", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_6", _xfa_widget("doc_allegato_6"), "Documento allegato 6", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_7", _xfa_widget("doc_allegato_7"), "Documento allegato 7", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_8", _xfa_widget("doc_allegato_8"), "Documento allegato 8", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_9", _xfa_widget("doc_allegato_9"), "Documento allegato 9", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("doc_allegato_10", _xfa_widget("doc_allegato_10"), "Documento allegato 10", choices=_MEF_DOCUMENTO_ALLEGATO_CHOICES, full_width=True),
+                PdfFieldDef("garanzia_assicurativa", _xfa_widget("garanzia_assicurativa"), "Coperture assicurative", "Es. Polizza credito e morte garantita da ...", full_width=True, font_size=9.0, multiline=True),
+                PdfFieldDef("eventuali_comnunicazioni_alla_rts", _xfa_widget("eventuali_comnunicazioni_alla_rts"), "Eventuali comunicazioni alla RTS", "Annotazioni opzionali per la RTS", full_width=True, font_size=9.0, multiline=True),
+            ),
+        ),
+        PdfSectionDef(
+            title="Delegato / Filiale",
+            icon="🏢",
+            description="Dati del delegato o della filiale che trasmette il flusso.",
+            fields=(
+                PdfFieldDef("codice_delegato", _xfa_widget("codice_delegato"), "Codice delegato", "Es. 12345"),
+                PdfFieldDef("denominazione_delegato", _xfa_widget("denominazione_delegato"), "Denominazione delegato", "Es. Agenzia Roma Centro", full_width=True),
+                PdfFieldDef("email_delegato", _xfa_widget("email_delegato"), "Email delegato", "Es. agenzia@email.it", full_width=True),
+                PdfFieldDef("telefono_delegato", _xfa_widget("telefono_delegato"), "Telefono delegato", "Es. 0612345678"),
+            ),
+        ),
+    ),
+)
+
+FRONTESPIZIO_INTEGRATIVO_SPEC = PdfTemplateSpec(
+    key="frontespizio_integrativo",
+    slug="frontespizio-integrativo",
+    label="Frontespizio Integrativo Banche / Finanziarie MEF",
+    description="Frontespizio integrativo ufficiale MEF per integrazioni documentali. Anche qui QuintoQuote aggiorna widget e dataset XFA del PDF LiveCycle.",
+    summary="26 campi compilabili ufficiali, dedicati a protocollo RTS, riferimenti contratto e documenti integrativi.",
+    template_name="frontespizio_integrativo_banche_finanziarie.pdf",
+    output_prefix="FrontespizioIntegrativoMEF",
+    filename_field="numero_contratto",
+    button_label="Scarica Frontespizio integrativo compilato",
+    render_mode="xfa",
+    sections=(
+        PdfSectionDef(
+            title="Protocollo RTS",
+            icon="🗂️",
+            description="Campi di protocollo e annotazioni del frontespizio integrativo.",
+            fields=(
+                PdfFieldDef("protocollo", _xfa_widget("protocollo"), "Protocollo", "Es. 1234"),
+                PdfFieldDef("data_protocollo", _xfa_widget("data_protocollo"), "Data protocollo", "GG/MM/AAAA"),
+                PdfFieldDef("osservazioni_rts", _xfa_widget("osservazioni_rts"), "Osservazioni RTS", "Annotazioni aggiuntive", full_width=True, font_size=9.0, multiline=True),
+                PdfFieldDef("cip", _xfa_widget("cip"), "C.I.P.", "Es. 1234"),
+                PdfFieldDef("nome_sede", _xfa_widget("nome_sede"), "Sede RTS", "Es. Roma"),
+            ),
+        ),
+        PdfSectionDef(
+            title="Contratto",
+            icon="📄",
+            description="Riferimenti del contratto oggetto dell'integrazione.",
+            fields=(
+                PdfFieldDef("numero_contratto", _xfa_widget("numero_contratto"), "Nr° contratto", "Es. 12345678"),
+                PdfFieldDef("data_contratto", _xfa_widget("data_contratto"), "Data contratto", "GG/MM/AAAA"),
+                PdfFieldDef("decorrenza_contratto", _xfa_widget("decorrenza_contratto"), "Decorrenza", choices=_MEF_MONTH_CHOICES),
+                PdfFieldDef("tipo_prestito", _xfa_widget("tipo_prestito"), "Tipo prestito", choices=_MEF_TIPO_PRESTITO_CHOICES, full_width=True),
+                PdfFieldDef("numero_rate", _xfa_widget("numero_rate"), "Nr° rate", "Es. 120"),
+                PdfFieldDef("rata_mensile", _xfa_widget("rata_mensile"), "Rata mensile €", "Es. 376,00"),
+                PdfFieldDef("societa_erogante", _xfa_widget("societa_erogante"), "Società erogante", "Es. Finanziaria XYZ S.p.A.", full_width=True, font_size=9.0),
+                PdfFieldDef("Societa_erogatrice", _xfa_widget("Societa_erogatrice"), "Società erogatrice / agenzia / filiale", "Es. Agenzia Roma Centro", full_width=True, font_size=9.0),
+            ),
+        ),
+        PdfSectionDef(
+            title="Documenti Integrativi",
+            icon="📎",
+            description="Documenti integrativi richiesti dalla RTS.",
+            fields=(
+                PdfFieldDef("documento_integrativo_1", _xfa_widget("documento_integrativo_1"), "Documento integrativo 1", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_2", _xfa_widget("documento_integrativo_2"), "Documento integrativo 2", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_3", _xfa_widget("documento_integrativo_3"), "Documento integrativo 3", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_4", _xfa_widget("documento_integrativo_4"), "Documento integrativo 4", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_5", _xfa_widget("documento_integrativo_5"), "Documento integrativo 5", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_6", _xfa_widget("documento_integrativo_6"), "Documento integrativo 6", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_7", _xfa_widget("documento_integrativo_7"), "Documento integrativo 7", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+                PdfFieldDef("documento_integrativo_8", _xfa_widget("documento_integrativo_8"), "Documento integrativo 8", choices=_MEF_DOCUMENTO_INTEGRATIVO_CHOICES, full_width=True),
+            ),
+        ),
+        PdfSectionDef(
+            title="Delegato e Codice NoiPA",
+            icon="🏢",
+            description="Dati del delegato e codice NoiPA collegati alla pratica integrativa.",
+            fields=(
+                PdfFieldDef("denominazione_delegato", _xfa_widget("denominazione_delegato"), "Denominazione delegato", "Es. Agenzia Roma Centro", full_width=True),
+                PdfFieldDef("codice_delegato", _xfa_widget("codice_delegato"), "Codice delegato", "Es. 12345"),
+                PdfFieldDef("codice_noipa_tipo", _xfa_widget("codice_noipa_tipo"), "Codice NoiPA - tipo", choices=_MEF_NOIPA_TYPE_CHOICES),
+                PdfFieldDef("codice_noipa_numero", _xfa_widget("codice_noipa_numero"), "Codice NoiPA - numero", "Es. 80226489"),
+            ),
+        ),
+    ),
+)
+
 _PDF_TEMPLATE_SPECS = {
     ALLEGATO_C_SPEC.key: ALLEGATO_C_SPEC,
     ALLEGATO_E_SPEC.key: ALLEGATO_E_SPEC,
+    FRONTESPIZIO_BANCHE_SPEC.key: FRONTESPIZIO_BANCHE_SPEC,
+    FRONTESPIZIO_INTEGRATIVO_SPEC.key: FRONTESPIZIO_INTEGRATIVO_SPEC,
     ALLEGATO_C_SPEC.slug: ALLEGATO_C_SPEC,
     ALLEGATO_E_SPEC.slug: ALLEGATO_E_SPEC,
+    FRONTESPIZIO_BANCHE_SPEC.slug: FRONTESPIZIO_BANCHE_SPEC,
+    FRONTESPIZIO_INTEGRATIVO_SPEC.slug: FRONTESPIZIO_INTEGRATIVO_SPEC,
 }
 
 
@@ -1799,6 +2051,22 @@ def sanitize_pdf_text(raw: object) -> str:
     return text
 
 
+def _pdf_choice_value(field: PdfFieldDef, raw: object) -> str:
+    value = sanitize_pdf_text(raw)
+    if not value or not field.choices:
+        return value
+    normalized = value.lower()
+    for option_value, option_label in field.choices:
+        if normalized in {sanitize_pdf_text(option_value).lower(), sanitize_pdf_text(option_label).lower()}:
+            return sanitize_pdf_text(option_value)
+    return value
+
+
+def _base_pdf_field_name(widget_name: str) -> str:
+    tail = sanitize_pdf_text(widget_name).rsplit(".", 1)[-1]
+    return re.sub(r"\[\d+\]$", "", tail)
+
+
 def default_pdf_form_values(spec: PdfTemplateSpec) -> dict[str, str]:
     values: dict[str, str] = {}
     for field in iter_pdf_fields(spec):
@@ -1815,7 +2083,7 @@ def sanitize_pdf_form_payload(spec: PdfTemplateSpec, raw: dict[str, object]) -> 
     values = default_pdf_form_values(spec)
     has_any_value = False
     for field in iter_pdf_fields(spec):
-        value = sanitize_pdf_text(raw.get(field.name, ""))
+        value = _pdf_choice_value(field, raw.get(field.name, ""))
         if value:
             values[field.name] = value
             has_any_value = True
@@ -1839,51 +2107,106 @@ def build_pdf_template_output_path(spec: PdfTemplateSpec, values: dict[str, str]
     return out_dir / f"{spec.output_prefix}_{identifier}_{stamp}.pdf"
 
 
+def _update_pdf_widgets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> tuple[set[str], set[str]]:
+    seen_widgets: set[str] = set()
+    seen_overlays: set[str] = set()
+    for page_index, page in enumerate(doc):
+        for widget in page.widgets() or []:
+            field = next((candidate for candidate in iter_pdf_fields(spec) if candidate.widget == widget.field_name), None)
+            if field is None:
+                continue
+            field_value = _pdf_choice_value(field, values.get(field.name, ""))
+            if spec.render_mode == "xfa" and field.choices:
+                continue
+            widget.field_value = field_value
+            if hasattr(widget, "text_font"):
+                widget.text_font = "Helv"
+            if hasattr(widget, "text_fontsize"):
+                widget.text_fontsize = field.font_size
+            widget.update()
+            seen_widgets.add(widget.field_name)
+
+        for field in iter_pdf_fields(spec):
+            if field.widget in seen_widgets:
+                continue
+            if field.overlay_rect is None or field.overlay_page != page_index:
+                continue
+            field_value = sanitize_pdf_text(values.get(field.name, ""))
+            if not field_value:
+                seen_overlays.add(field.widget)
+                continue
+            rect = fitz.Rect(*field.overlay_rect)
+            page.insert_text(
+                fitz.Point(rect.x0 + 2, rect.y1 - 3),
+                field_value,
+                fontname="helv",
+                fontsize=field.font_size,
+                color=(0, 0, 0),
+            )
+            seen_overlays.add(field.widget)
+    return seen_widgets, seen_overlays
+
+
+def _get_xfa_packet_xrefs(doc) -> dict[str, int]:
+    root_xref = doc.pdf_catalog()
+    acro_form = doc.xref_get_key(root_xref, "AcroForm")
+    if acro_form[0] != "xref":
+        return {}
+    acro_xref = int(acro_form[1].split()[0])
+    xfa = doc.xref_get_key(acro_xref, "XFA")
+    if xfa[0] != "array":
+        return {}
+    return {
+        label: int(xref)
+        for label, xref in re.findall(r"\((.*?)\)(\d+)\s+0\s+R", xfa[1])
+    }
+
+
+def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> set[str]:
+    packet_xrefs = _get_xfa_packet_xrefs(doc)
+    datasets_xref = packet_xrefs.get("datasets")
+    if not datasets_xref:
+        raise RuntimeError("Il template XFA non contiene il pacchetto datasets atteso.")
+
+    xml_bytes = doc.xref_stream(datasets_xref)
+    xml_root = ET.fromstring(xml_bytes)
+    data_node = xml_root.find(f"{{{_XFA_DATASET_NS}}}data")
+    if data_node is None:
+        raise RuntimeError("Il pacchetto XFA datasets non contiene xfa:data.")
+    subform_node = data_node.find("topmostSubform")
+    if subform_node is None:
+        raise RuntimeError("Il pacchetto XFA datasets non contiene topmostSubform.")
+
+    updated_fields: set[str] = set()
+    for field in iter_pdf_fields(spec):
+        xfa_name = field.xfa_name or _base_pdf_field_name(field.widget)
+        if not xfa_name:
+            continue
+        target = subform_node.find(xfa_name)
+        if target is None:
+            continue
+        target.text = _pdf_choice_value(field, values.get(field.name, "")) or None
+        updated_fields.add(field.widget)
+
+    doc.update_stream(datasets_xref, ET.tostring(xml_root, encoding="utf-8"))
+    return updated_fields
+
+
 def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_path: Path) -> Path:
     fitz_mod = require_pymupdf()
     template_path = _PDF_TEMPLATE_DIR / spec.template_name
     if not template_path.exists():
         raise FileNotFoundError(f"Template non trovato: {template_path.name}")
 
-    field_map = {field.widget: field for field in iter_pdf_fields(spec)}
     doc = fitz_mod.open(template_path)
     doc.need_appearances(True)
-    seen_widgets: set[str] = set()
-    seen_overlays: set[str] = set()
     try:
-        for page_index, page in enumerate(doc):
-            for widget in page.widgets() or []:
-                field = field_map.get(widget.field_name)
-                if field is None:
-                    continue
-                widget.field_value = sanitize_pdf_text(values.get(field.name, ""))
-                if hasattr(widget, "text_font"):
-                    widget.text_font = "Helv"
-                if hasattr(widget, "text_fontsize"):
-                    widget.text_fontsize = field.font_size
-                widget.update()
-                seen_widgets.add(widget.field_name)
+        seen_widgets, seen_overlays = _update_pdf_widgets(doc, spec, values)
+        seen_xfa: set[str] = set()
+        if spec.render_mode == "xfa":
+            seen_xfa = _update_xfa_datasets(doc, spec, values)
 
-            for field in iter_pdf_fields(spec):
-                if field.widget in seen_widgets:
-                    continue
-                if field.overlay_rect is None or field.overlay_page != page_index:
-                    continue
-                field_value = sanitize_pdf_text(values.get(field.name, ""))
-                if not field_value:
-                    seen_overlays.add(field.widget)
-                    continue
-                rect = fitz_mod.Rect(*field.overlay_rect)
-                page.insert_text(
-                    fitz_mod.Point(rect.x0 + 2, rect.y1 - 3),
-                    field_value,
-                    fontname="helv",
-                    fontsize=field.font_size,
-                    color=(0, 0, 0),
-                )
-                seen_overlays.add(field.widget)
-
-        missing_widgets = sorted(set(field_map) - seen_widgets - seen_overlays)
+        missing_widgets = sorted({field.widget for field in iter_pdf_fields(spec)} - seen_widgets - seen_overlays - seen_xfa)
         if missing_widgets:
             raise RuntimeError(
                 "Nel template PDF mancano alcuni widget attesi: " + ", ".join(missing_widgets)
@@ -2027,6 +2350,9 @@ CASE_FIELD_DEFS = (
     CaseFieldDef("service_office", "In servizio presso", "lavoro", "Es. I.C. Faenza San Rocco"),
     CaseFieldDef("employer_entity", "Ente di appartenenza", "lavoro", "Es. Ministero dell'Istruzione"),
     CaseFieldDef("lender_name", "Istituto / finanziaria", "finanza", "Es. Istituto delegatario"),
+    CaseFieldDef("contract_number", "Numero contratto", "finanza", "Es. 12345678"),
+    CaseFieldDef("contract_date", "Data contratto", "finanza", "GG/MM/AAAA"),
+    CaseFieldDef("loan_type", "Tipo prestito", "finanza", "Es. Delegazione di Pagamento"),
     CaseFieldDef("iban", "IBAN istituto delegatario", "bancario", "Es. IT60X0542811101000000123456"),
     CaseFieldDef("borrower_iban", "IBAN personale / accredito stipendio", "bancario", "Es. IT60X0542811101000000123456"),
     CaseFieldDef("loan_amount", "Importo finanziamento", "finanza", "Es. 30.000,00"),
@@ -2164,6 +2490,18 @@ FIELD_PATTERNS: dict[str, tuple[str, ...]] = {
     "lender_name": (
         r"(?im)(?:istituto\s+delegatario|istituto\s+mutuante|societ[aà]\s+finanziaria)\s*[:\-]?\s*([^\n]{3,120})",
         r"(?im)ha\s+chiesto\s+un\s+finanziamento\s+a\s*([^\n]{3,120})",
+    ),
+    "contract_number": (
+        r"(?im)(?:nr[°o]?\s*contratto|numero\s+contratto|n[°o]?\s*contratto)\s*[:\-]?\s*([A-Z0-9\/\.-]{3,40})",
+        r"(?im)n[°o]?\s*pratica\s*[:\-]?\s*([A-Z0-9\/\.-]{3,40})",
+    ),
+    "contract_date": (
+        rf"(?im)data\s+contratto\s*[:\-]?\s*{_DATE_CAPTURE}",
+    ),
+    "loan_type": (
+        r"(?im)(?:tipo\s+prestito|tipo\s+finanziamento)\s*[:\-]?\s*([^\n]{3,80})",
+        r"(?im)richiesta\s+di\s+[\"“]?([^\n\"]{8,80})",
+        r"(?im)\b(delegazione\s+di\s+pagamento|cessione(?:\s+del)?\s+quinto)\b",
     ),
     "iban": (
         r"\b(IT\d{2}(?:\s?[A-Z0-9]){23})\b",
@@ -2479,6 +2817,12 @@ def _extract_standard_financing_contract_fields(pdf_bytes: bytes, text: str) -> 
     doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
     try:
         fields: dict[str, str] = {}
+        normalized_contract_text = _normalize_search_text(text).lower()
+
+        if "delegazione di pagamento" in normalized_contract_text:
+            fields["loan_type"] = "Delegazione di Pagamento"
+        elif "cessione" in normalized_contract_text:
+            fields["loan_type"] = "Cessione del Quinto"
 
         summary_page = doc[0]
         summary_text = _normalize_search_text(summary_page.get_text("text"))
@@ -2733,7 +3077,7 @@ def _reject_extracted_value(field_name: str, value: str) -> bool:
         return True
     if field_name in {"tan", "taeg", "teg"} and not re.fullmatch(r"\d+(?:,\d{1,3})?", value):
         return True
-    if field_name in {"birth_date", "other_financing_expiry"} and not re.fullmatch(r"\d{2}/\d{2}/\d{4}", value):
+    if field_name in {"birth_date", "contract_date", "other_financing_expiry"} and not re.fullmatch(r"\d{2}/\d{2}/\d{4}", value):
         return True
     if field_name == "email" and "@" not in value:
         return True
@@ -2912,6 +3256,64 @@ def _split_email(value: str) -> tuple[str, str]:
     return local.strip(), domain.strip()
 
 
+def _split_full_name_for_frontespizio(full_name: str) -> tuple[str, str]:
+    clean = sanitize_pdf_text(full_name)
+    if not clean:
+        return "", ""
+    tokens = clean.split()
+    if len(tokens) == 1:
+        return tokens[0], ""
+    if len(tokens) == 2:
+        return tokens[0], tokens[1]
+    return " ".join(tokens[:-1]), tokens[-1]
+
+
+def _split_noipa_code(value: str) -> tuple[str, str]:
+    clean = sanitize_pdf_text(value).upper()
+    match = re.match(r"^([XBD])\s*[-/ ]?\s*([A-Z0-9]+)$", clean)
+    if match:
+        return match.group(1), match.group(2)
+    return "", clean
+
+
+def _month_name_from_date_it(value: str) -> str:
+    clean = sanitize_pdf_text(value)
+    if not clean:
+        return ""
+    try:
+        parsed = parse_date_it(clean)
+    except Exception:
+        return ""
+    month_names = {
+        1: "Gennaio",
+        2: "Febbraio",
+        3: "Marzo",
+        4: "Aprile",
+        5: "Maggio",
+        6: "Giugno",
+        7: "Luglio",
+        8: "Agosto",
+        9: "Settembre",
+        10: "Ottobre",
+        11: "Novembre",
+        12: "Dicembre",
+    }
+    return month_names.get(parsed.month, "")
+
+
+def _map_mef_tipo_prestito(value: str) -> str:
+    clean = sanitize_pdf_text(value).lower()
+    if not clean:
+        return ""
+    if "delega" in clean:
+        return "Delegazione di Pagamento"
+    if "credito net" in clean:
+        return "Cessione Credito Net"
+    if "cessione" in clean:
+        return "Cessione No Credito Net"
+    return ""
+
+
 def _safe_pdf_text_from_bytes(data: bytes) -> tuple[str, int]:
     fitz_mod = require_pymupdf()
     doc = fitz_mod.open(stream=data, filetype="pdf")
@@ -3002,6 +3404,42 @@ def _case_data_from_known_template_values(spec_key: str, values: dict[str, str])
             "service_office": values.get("dipendente_in_servizio_presso", ""),
             "employer_entity": values.get("dipendente_ente_appartenenza", ""),
         }
+    if spec_key == FRONTESPIZIO_BANCHE_SPEC.key:
+        full_name = _normalize_person_name(values.get("cognome", ""), values.get("nome", ""))
+        noipa_type = values.get("codice_noipa_tipo", "")
+        noipa_number = values.get("codice_noipa_numero", "")
+        payroll_number = f"{noipa_type}-{noipa_number}" if noipa_type and noipa_number else noipa_number
+        return {
+            "full_name": full_name,
+            "birth_place": values.get("luogo_di_nascita", ""),
+            "birth_province_code": values.get("provincia_di_nascita", ""),
+            "birth_date": values.get("data_di_nascita", ""),
+            "tax_code": values.get("codice_fiscale", ""),
+            "email": values.get("email_richiedente", ""),
+            "phone": values.get("telefono_richiedente", ""),
+            "payroll_number": payroll_number,
+            "lender_name": values.get("societa_erogante", ""),
+            "installment_count": values.get("numero_rate", ""),
+            "monthly_installment": values.get("rata_mensile", ""),
+            "tan": values.get("TAN", ""),
+            "teg": values.get("TEG", ""),
+            "taeg": values.get("TAEG", values.get("ISC", "")),
+            "insurance": values.get("garanzia_assicurativa", ""),
+            "other_financing_lender": values.get("societa_estinzione_1", ""),
+            "other_financing_installment": values.get("rata_estinzione_1", ""),
+            "service_office": values.get("nome_sede", ""),
+        }
+    if spec_key == FRONTESPIZIO_INTEGRATIVO_SPEC.key:
+        noipa_type = values.get("codice_noipa_tipo", "")
+        noipa_number = values.get("codice_noipa_numero", "")
+        payroll_number = f"{noipa_type}-{noipa_number}" if noipa_type and noipa_number else noipa_number
+        return {
+            "payroll_number": payroll_number,
+            "lender_name": values.get("societa_erogante", values.get("Societa_erogatrice", "")),
+            "service_office": values.get("nome_sede", ""),
+            "installment_count": values.get("numero_rate", ""),
+            "monthly_installment": values.get("rata_mensile", ""),
+        }
     return {}
 
 
@@ -3009,7 +3447,7 @@ def _extract_known_template_fields_from_widgets(widget_values: dict[str, str]) -
     best_spec: Optional[PdfTemplateSpec] = None
     best_hits = 0
     best_logical_values: dict[str, str] = {}
-    for spec in (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC):
+    for spec in (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC, FRONTESPIZIO_BANCHE_SPEC, FRONTESPIZIO_INTEGRATIVO_SPEC):
         widget_to_name = {field.widget: field.name for field in iter_pdf_fields(spec)}
         logical_values = {
             widget_to_name[widget_name]: sanitize_pdf_text(widget_value)
@@ -3275,6 +3713,10 @@ def build_prefill_for_template(spec_key: str, case_data: dict[str, str]) -> dict
     spec = get_pdf_template_spec(spec_key)
     data = {k: sanitize_pdf_text(v) for k, v in case_data.items() if sanitize_pdf_text(v)}
     email_local, email_domain = _split_email(data.get("email", ""))
+    surname, name = _split_full_name_for_frontespizio(data.get("full_name", ""))
+    noipa_type, noipa_number = _split_noipa_code(data.get("payroll_number", ""))
+    month_name = _month_name_from_date_it(data.get("contract_date", ""))
+    mef_tipo_prestito = _map_mef_tipo_prestito(data.get("loan_type", ""))
 
     if spec.key == ALLEGATO_E_SPEC.key:
         mapped = {
@@ -3334,12 +3776,407 @@ def build_prefill_for_template(spec_key: str, case_data: dict[str, str]) -> dict
             "dipendente_in_servizio_presso": data.get("service_office", ""),
             "dipendente_ente_appartenenza": data.get("employer_entity", ""),
         }
+    elif spec.key == FRONTESPIZIO_BANCHE_SPEC.key:
+        mapped = {
+            "cognome": surname,
+            "nome": name,
+            "codice_fiscale": data.get("tax_code", ""),
+            "data_di_nascita": data.get("birth_date", ""),
+            "luogo_di_nascita": data.get("birth_place", ""),
+            "provincia_di_nascita": data.get("birth_province_code", data.get("birth_province_name", "")),
+            "email_richiedente": data.get("email", ""),
+            "telefono_richiedente": data.get("phone", ""),
+            "codice_noipa_tipo": noipa_type,
+            "codice_noipa_numero": noipa_number,
+            "societa_erogante": data.get("lender_name", ""),
+            "numero_contratto": data.get("contract_number", ""),
+            "data_contratto": data.get("contract_date", ""),
+            "decorrenza_contratto": month_name,
+            "tipo_prestito": mef_tipo_prestito,
+            "numero_rate": data.get("installment_count", ""),
+            "rata_mensile": data.get("monthly_installment", ""),
+            "TAN": data.get("tan", ""),
+            "TEG": data.get("teg", ""),
+            "TAEG": data.get("taeg", ""),
+            "ISC": data.get("taeg", ""),
+            "garanzia_assicurativa": data.get("insurance", ""),
+            "tipologia_estinzione_1": "Cessione" if data.get("other_financing_lender") else "",
+            "societa_estinzione_1": data.get("other_financing_lender", ""),
+            "rata_estinzione_1": data.get("other_financing_installment", ""),
+        }
+    elif spec.key == FRONTESPIZIO_INTEGRATIVO_SPEC.key:
+        mapped = {
+            "numero_contratto": data.get("contract_number", ""),
+            "data_contratto": data.get("contract_date", ""),
+            "decorrenza_contratto": month_name,
+            "tipo_prestito": mef_tipo_prestito,
+            "numero_rate": data.get("installment_count", ""),
+            "rata_mensile": data.get("monthly_installment", ""),
+            "nome_sede": data.get("service_office", ""),
+            "Societa_erogatrice": data.get("agency_name", ""),
+            "societa_erogante": data.get("lender_name", ""),
+            "denominazione_delegato": data.get("agency_name", ""),
+            "codice_delegato": data.get("agency_code", ""),
+            "codice_noipa_tipo": noipa_type,
+            "codice_noipa_numero": noipa_number,
+        }
     else:
         mapped = {}
 
     clean = default_pdf_form_values(spec)
     clean.update({k: v for k, v in mapped.items() if v})
     return clean
+
+
+_FINAL_CHECK_SPECS = (
+    ALLEGATO_E_SPEC,
+    ALLEGATO_C_SPEC,
+    FRONTESPIZIO_BANCHE_SPEC,
+    FRONTESPIZIO_INTEGRATIVO_SPEC,
+)
+
+_FINAL_CHECK_REQUIRED_FIELDS = {
+    ALLEGATO_E_SPEC.key: (
+        "istante_nome_completo",
+        "nascita_comune",
+        "nascita_data",
+        "codice_fiscale",
+        "partita_stipendiale",
+        "istituto_delegatario",
+        "importo_trattenuta_mensile",
+        "importo_finanziamento_cifre",
+        "importo_globale_ceduto_cifre",
+        "tan",
+        "taeg",
+    ),
+    ALLEGATO_C_SPEC.key: (
+        "importo_erogato",
+        "importo_globale_ceduto",
+        "tan",
+        "isc_taeg",
+        "numero_rate_estinguibili",
+        "importo_rata_estinzione",
+        "dipendente_nome_cognome",
+        "dipendente_nascita_luogo",
+        "dipendente_nascita_data",
+        "dipendente_codice_fiscale",
+        "dipendente_in_servizio_presso",
+        "dipendente_ente_appartenenza",
+    ),
+    FRONTESPIZIO_BANCHE_SPEC.key: (
+        "cognome",
+        "nome",
+        "codice_fiscale",
+        "data_di_nascita",
+        "luogo_di_nascita",
+        "provincia_di_nascita",
+        "codice_noipa_tipo",
+        "codice_noipa_numero",
+        "societa_erogante",
+        "numero_contratto",
+        "data_contratto",
+        "decorrenza_contratto",
+        "tipo_prestito",
+        "numero_rate",
+        "rata_mensile",
+        "TAN",
+        "TAEG",
+    ),
+    FRONTESPIZIO_INTEGRATIVO_SPEC.key: (
+        "numero_contratto",
+        "data_contratto",
+        "decorrenza_contratto",
+        "tipo_prestito",
+        "numero_rate",
+        "rata_mensile",
+        "societa_erogante",
+        "codice_noipa_tipo",
+        "codice_noipa_numero",
+    ),
+}
+
+_FINAL_CHECK_IDENTITY_DOCUMENT_KEYS = {"carta_identita", "tessera_sanitaria"}
+
+
+def _final_check_issue(title: str, detail: str = "") -> dict[str, str]:
+    return {"title": sanitize_pdf_text(title), "detail": sanitize_pdf_text(detail)}
+
+
+def _final_check_field_label(spec: PdfTemplateSpec, field_name: str) -> str:
+    for field in iter_pdf_fields(spec):
+        if field.name == field_name:
+            return field.label
+    return field_name.replace("_", " ").title()
+
+
+def _normalize_final_check_value(field_name: str, value: str) -> str:
+    clean = sanitize_pdf_text(value)
+    if field_name == "tax_code":
+        return clean.replace(" ", "").upper()
+    if field_name in {"full_name", "birth_place"}:
+        return re.sub(r"\s+", " ", clean).lower()
+    if field_name in {"birth_date", "contract_date"}:
+        return _clean_extracted_value(field_name, clean)
+    return clean.lower()
+
+
+def _collect_document_presence_checks(results: list[DocumentExtractionResult]) -> tuple[list[dict[str, object]], list[dict[str, str]], list[dict[str, str]]]:
+    present_keys = {result.document_key for result in results}
+    checks = [
+        {"label": "Contratto di finanziamento", "present": "contratto_finanziamento" in present_keys, "severity": "blocking"},
+        {"label": "Busta paga NoiPA", "present": "cedolino_noipa" in present_keys, "severity": "blocking"},
+        {"label": "Carta di identità", "present": "carta_identita" in present_keys, "severity": "warning"},
+        {"label": "Tessera sanitaria", "present": "tessera_sanitaria" in present_keys, "severity": "warning"},
+    ]
+    blocking: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    if "contratto_finanziamento" not in present_keys:
+        blocking.append(_final_check_issue("Manca il contratto di finanziamento.", "Carica almeno un contratto prima del download finale dei moduli."))
+    if "cedolino_noipa" not in present_keys:
+        blocking.append(_final_check_issue("Manca la busta paga NoiPA.", "Il check finale richiede almeno un cedolino per validare partita stipendiale e dati di servizio."))
+
+    present_identity = sorted(_FINAL_CHECK_IDENTITY_DOCUMENT_KEYS & present_keys)
+    if not present_identity:
+        blocking.append(_final_check_issue("Manca la documentazione anagrafica.", "Carica almeno carta di identità o tessera sanitaria."))
+    elif len(present_identity) == 1:
+        missing_label = "tessera sanitaria" if "carta_identita" in present_identity else "carta di identità"
+        warnings.append(_final_check_issue("Documentazione anagrafica parziale.", f"Hai caricato solo un documento anagrafico: manca {missing_label}."))
+
+    return checks, blocking, warnings
+
+
+def _collect_anagraphic_consistency_issues(results: list[DocumentExtractionResult]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    field_defs = {
+        "tax_code": ("Codice fiscale", "blocking"),
+        "birth_date": ("Data di nascita", "blocking"),
+        "full_name": ("Nome e cognome", "warning"),
+        "birth_place": ("Luogo di nascita", "warning"),
+    }
+    blocking: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    for field_name, (label, severity) in field_defs.items():
+        variants: dict[str, list[tuple[str, str, str]]] = {}
+        for result in results:
+            raw_value = sanitize_pdf_text(result.extracted_fields.get(field_name, ""))
+            if not raw_value:
+                continue
+            normalized = _normalize_final_check_value(field_name, raw_value)
+            variants.setdefault(normalized, []).append((result.filename, result.document_label, raw_value))
+        if len(variants) <= 1:
+            continue
+        variant_summaries = []
+        for items in variants.values():
+            filenames = ", ".join(item[0] for item in items[:2])
+            variant_summaries.append(f"{items[0][2]} ({filenames})")
+        issue = _final_check_issue(
+            f"Incoerenza anagrafica su {label.lower()}.",
+            "Valori diversi tra i documenti: " + " | ".join(variant_summaries),
+        )
+        if severity == "blocking":
+            blocking.append(issue)
+        else:
+            warnings.append(issue)
+
+    return blocking, warnings
+
+
+def _collect_numeric_consistency_issues(case_values: dict[str, str]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    blocking: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    installment = _parse_decimal_maybe(case_values.get("monthly_installment", ""))
+    total_ceded = _parse_decimal_maybe(case_values.get("total_ceded", ""))
+    loan_amount = _parse_decimal_maybe(case_values.get("loan_amount", case_values.get("net_disbursed", "")))
+    tan = _parse_decimal_maybe(case_values.get("tan", ""))
+    taeg = _parse_decimal_maybe(case_values.get("taeg", ""))
+
+    count = None
+    raw_count = sanitize_pdf_text(case_values.get("installment_count", ""))
+    if raw_count:
+        try:
+            count = int(re.sub(r"[^\d]", "", raw_count))
+        except Exception:
+            count = None
+
+    missing_economic = [
+        label
+        for label, key in (
+            ("rata mensile", "monthly_installment"),
+            ("durata / numero rate", "installment_count"),
+            ("montante / importo globale ceduto", "total_ceded"),
+        )
+        if not sanitize_pdf_text(case_values.get(key, ""))
+    ]
+    if missing_economic:
+        blocking.append(_final_check_issue("Dati economici essenziali incompleti.", "Mancano: " + ", ".join(missing_economic) + "."))
+
+    if installment is not None and count in _ALLOWED_INSTALLMENT_COUNTS and total_ceded is not None:
+        derived_total = round(installment * count, 2)
+        if abs(derived_total - total_ceded) > 1.0:
+            blocking.append(
+                _final_check_issue(
+                    "Incoerenza tra rata, durata e montante.",
+                    f"Rata x durata produce {_format_money_it(derived_total)}, ma il montante attuale è {_format_money_it(total_ceded)}.",
+                )
+            )
+    elif installment is not None and count and count not in _ALLOWED_INSTALLMENT_COUNTS:
+        warnings.append(_final_check_issue("Durata fuori dallo standard operativo.", f"Numero rate rilevato: {count}."))
+
+    if tan is not None and taeg is not None and tan > taeg:
+        blocking.append(_final_check_issue("TAN maggiore del TAEG.", f"TAN {case_values.get('tan', '')} > TAEG {case_values.get('taeg', '')}."))
+
+    if loan_amount is not None and total_ceded is not None and total_ceded < loan_amount:
+        blocking.append(
+            _final_check_issue(
+                "Importo globale ceduto inferiore al capitale.",
+                f"Montante {case_values.get('total_ceded', '')} inferiore a importo finanziamento {case_values.get('loan_amount', case_values.get('net_disbursed', ''))}.",
+            )
+        )
+
+    return blocking, warnings
+
+
+def _build_module_final_check(spec: PdfTemplateSpec, case_values: dict[str, str]) -> dict[str, object]:
+    prefill_values = build_prefill_for_template(spec.key, case_values)
+    missing = [
+        _final_check_field_label(spec, field_name)
+        for field_name in _FINAL_CHECK_REQUIRED_FIELDS.get(spec.key, ())
+        if not sanitize_pdf_text(prefill_values.get(field_name, ""))
+    ]
+    return {
+        "spec_key": spec.key,
+        "slug": spec.slug,
+        "label": spec.label,
+        "render_mode": spec.render_mode,
+        "ready": not missing,
+        "missing_fields": missing,
+        "missing_count": len(missing),
+        "prefill_values": prefill_values,
+    }
+
+
+def build_final_check_summary(results: list[DocumentExtractionResult], manual_values: dict[str, str]) -> dict[str, object]:
+    reviewed_fields = merge_reviewed_case_fields(results, manual_values)
+    case_values = aggregated_fields_to_dict(reviewed_fields)
+
+    document_checks, blocking_items, warning_items = _collect_document_presence_checks(results)
+    mismatch_blocking, mismatch_warnings = _collect_anagraphic_consistency_issues(results)
+    numeric_blocking, numeric_warnings = _collect_numeric_consistency_issues(case_values)
+    blocking_items.extend(mismatch_blocking)
+    blocking_items.extend(numeric_blocking)
+    warning_items.extend(mismatch_warnings)
+    warning_items.extend(numeric_warnings)
+
+    module_checks = [_build_module_final_check(spec, case_values) for spec in _FINAL_CHECK_SPECS]
+    for module in module_checks:
+        if module["missing_fields"]:
+            missing_preview = ", ".join(module["missing_fields"][:6])
+            if module["missing_count"] > 6:
+                missing_preview += f" e altri {module['missing_count'] - 6}"
+            blocking_items.append(
+                _final_check_issue(
+                    f"{module['label']}: campi obbligatori mancanti.",
+                    missing_preview,
+                )
+            )
+
+    warning_items.append(
+        _final_check_issue(
+            "Verifica Adobe Reader consigliata per i frontespizi.",
+            "I frontespizi MEF sono moduli XFA: prima dell'invio PEC controlla il rendering finale in Adobe Reader.",
+        )
+    )
+
+    status = "Pronta"
+    tone = "ready"
+    if blocking_items:
+        status = "Non pronta"
+        tone = "danger"
+    elif warning_items:
+        status = "Pronta con verifiche"
+        tone = "warning"
+
+    return {
+        "status": status,
+        "tone": tone,
+        "can_download": not blocking_items,
+        "blocking_items": blocking_items,
+        "warning_items": warning_items,
+        "document_checks": document_checks,
+        "module_checks": module_checks,
+        "reviewed_fields": reviewed_fields,
+        "case_values": case_values,
+    }
+
+
+def _build_final_check_identifier(case_values: dict[str, str]) -> str:
+    base = sanitize_filename(case_values.get("full_name", "")) or sanitize_filename(case_values.get("contract_number", "")) or "Pratica"
+    tax_code = sanitize_filename(case_values.get("tax_code", ""))
+    return f"{base}_{tax_code}" if tax_code else base
+
+
+def _get_final_check_output_root(out_dir: Path) -> Path:
+    root = out_dir / "pratiche_mef"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _write_final_check_report(output_path: Path, summary: dict[str, object]) -> Path:
+    lines = [
+        f"Check Finale Pratica - {summary['status']}",
+        f"Generato il: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+        "",
+    ]
+    if summary["blocking_items"]:
+        lines.append("MANCANZE BLOCCANTI:")
+        for item in summary["blocking_items"]:
+            lines.append(f"- {item['title']}")
+            if item["detail"]:
+                lines.append(f"  {item['detail']}")
+        lines.append("")
+    if summary["warning_items"]:
+        lines.append("CONTROLLI CONSIGLIATI:")
+        for item in summary["warning_items"]:
+            lines.append(f"- {item['title']}")
+            if item["detail"]:
+                lines.append(f"  {item['detail']}")
+        lines.append("")
+    output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return output_path
+
+
+def build_final_check_package(summary: dict[str, object], out_dir: Path) -> tuple[Path, Path]:
+    case_values = dict(summary["case_values"])
+    bundle_root = _get_final_check_output_root(out_dir)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    identifier = _build_final_check_identifier(case_values)
+    practice_dir = bundle_root / f"PraticaMEF_{identifier}_{stamp}"
+    practice_dir.mkdir(parents=True, exist_ok=True)
+
+    for spec in _FINAL_CHECK_SPECS:
+        values = build_prefill_for_template(spec.key, case_values)
+        generate_pdf_template(spec.key, values, practice_dir)
+
+    _write_final_check_report(practice_dir / "CHECK_FINALE.txt", summary)
+
+    zip_path = practice_dir.with_suffix(".zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(practice_dir.iterdir()):
+            zf.write(file_path, arcname=file_path.name)
+
+    return practice_dir, zip_path
+
+
+def open_local_folder(path: Path) -> None:
+    target = path.expanduser().resolve()
+    if sys.platform.startswith("win"):
+        os.startfile(str(target))
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)])
+        return
+    subprocess.Popen(["xdg-open", str(target)])
 
 # =========================
 #  WEB (OPZIONALE) - localhost
@@ -4896,9 +5733,20 @@ def run_web(
         {% endfor %}
 
         <div class="section-title" style="margin-top:24px">📎 Apri Modulo</div>
-        <div class="preview-actions">
+        <div class="preview-actions" style="flex-wrap:wrap">
           <button type="submit" formaction="/moduli/allegato-e/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato E precompilato</button>
           <button type="submit" formaction="/moduli/allegato-c/prefill" class="btn-primary" style="flex:1;margin:0">Apri Allegato C precompilato</button>
+          <button type="submit" formaction="/moduli/frontespizio-banche/prefill" class="btn-primary" style="flex:1;margin:0">Apri Frontespizio precompilato</button>
+          <button type="submit" formaction="/moduli/frontespizio-integrativo/prefill" class="btn-primary" style="flex:1;margin:0">Apri Frontespizio integrativo</button>
+        </div>
+
+        <div class="section-title" style="margin-top:24px">✅ Ultimo Passo</div>
+        <div class="info-banner">
+          Quando hai finito la revisione, apri il check finale pratica: QuintoQuote controllerà completezza moduli,
+          coerenze numeriche, mismatch anagrafici e presenza dei documenti chiave prima del download finale.
+        </div>
+        <div class="preview-actions" style="margin-top:14px">
+          <button type="submit" formaction="/dossier/final-check" class="btn-primary" style="flex:1;margin:0">Vai al Check Finale Pratica</button>
         </div>
         {% endif %}
       </form>
@@ -4915,8 +5763,9 @@ def run_web(
     <div class="card">
       <div class="section-title">📎 Compilatore Modulistica MEF</div>
       <div class="info-banner">
-        I due template PDF presenti in <code>docs/</code> sono stati mappati sui rispettivi widget:
-        puoi compilare i campi con etichette leggibili e scaricare direttamente il PDF finale.
+        I template PDF presenti in <code>docs/</code> sono mappati sui rispettivi campi compilabili.
+        Per i frontespizi ufficiali LiveCycle/XFA QuintoQuote aggiorna anche il dataset interno del PDF,
+        non solo il valore visibile nel campo.
       </div>
 
       <div class="module-grid">
@@ -4943,6 +5792,7 @@ def run_web(
       <div class="info-banner">
         {{ spec.description }}<br/>
         Template di origine: <code>{{ spec.template_name }}</code>. {{ spec.summary }}
+        {% if spec.render_mode == 'xfa' %}<br/>Compatibilità: modulo Adobe LiveCycle/XFA, compilato con aggiornamento widget + dataset interno.{% endif %}
       </div>
 
       {% if error %}
@@ -4959,12 +5809,23 @@ def run_web(
           {% for field in section.fields %}
           <div class="form-group {{ 'full-width' if field.full_width else '' }}">
             <label>{{ field.label }}</label>
+            {% if field.choices %}
+            <select name="{{ field.name }}">
+              <option value="">Seleziona...</option>
+              {% for option_value, option_label in field.choices %}
+              <option value="{{ option_value }}" {% if values.get(field.name, '') == option_value %}selected{% endif %}>{{ option_label }}</option>
+              {% endfor %}
+            </select>
+            {% elif field.multiline %}
+            <textarea name="{{ field.name }}" rows="3" placeholder="{{ field.placeholder }}" autocomplete="off">{{ values.get(field.name, '') }}</textarea>
+            {% else %}
             <input
               name="{{ field.name }}"
               value="{{ values.get(field.name, '') }}"
               placeholder="{{ field.placeholder }}"
               autocomplete="off"
             />
+            {% endif %}
             {% if field.help_text %}
             <div class="helper-text">{{ field.help_text }}</div>
             {% endif %}
@@ -4978,6 +5839,118 @@ def run_web(
           <a href="/moduli" class="btn-secondary" style="flex:1;min-width:180px;display:flex;align-items:center;justify-content:center">↩ Torna ai moduli</a>
         </div>
       </form>
+    </div>
+    """
+
+    FINAL_CHECK_CONTENT = """
+    <div class="card">
+      <div class="section-title">✅ Check Finale Pratica</div>
+      <div class="info-banner">
+        Questa è l'ultima verifica prima del download finale. QuintoQuote controlla completezza moduli, coerenze numeriche,
+        mismatch anagrafici, presenza documenti e warning specifici XFA per i frontespizi MEF.
+      </div>
+
+      {% if notice %}
+      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#d1fae5;font-size:13px">
+        {{ notice }}
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div style="padding:12px 16px;margin-bottom:16px;border-radius:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#fecaca;font-size:13px">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <div style="padding:18px 20px;border-radius:14px;margin-bottom:18px;background:
+        {% if summary.tone == 'ready' %}rgba(16,185,129,.12){% elif summary.tone == 'warning' %}rgba(245,158,11,.12){% else %}rgba(239,68,68,.12){% endif %};
+        border:1px solid
+        {% if summary.tone == 'ready' %}rgba(16,185,129,.3){% elif summary.tone == 'warning' %}rgba(245,158,11,.3){% else %}rgba(239,68,68,.3){% endif %};">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div style="font-size:12px;text-transform:uppercase;letter-spacing:1.4px;color:var(--text-muted);margin-bottom:6px">Esito pratica</div>
+            <div style="font-size:28px;font-weight:800;color:var(--text-primary)">{{ summary.status }}</div>
+            <div class="helper-text" style="margin-top:8px">
+              {{ summary.blocking_items|length }} blocchi · {{ summary.warning_items|length }} verifiche consigliate
+            </div>
+          </div>
+          <div class="dossier-badges">
+            <span>{{ summary.module_checks|length }} moduli controllati</span>
+            <span>{{ summary.document_checks|length }} categorie documentali</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-title">📂 Presenza Documenti</div>
+      <div class="preview-grid">
+        {% for check in summary.document_checks %}
+        <div class="preview-item {% if check.present %}highlight{% endif %}" style="border-color:{% if check.present %}rgba(16,185,129,.25){% elif check.severity == 'blocking' %}rgba(239,68,68,.22){% else %}rgba(245,158,11,.22){% endif %}">
+          <div class="label">{{ check.label }}</div>
+          <div class="value" style="font-size:18px">{% if check.present %}Presente{% else %}Manca{% endif %}</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="section-title" style="margin-top:24px">🧾 Stato Moduli</div>
+      <div class="module-grid">
+        {% for module in summary.module_checks %}
+        <div class="module-card" style="border-color:{% if module.ready %}rgba(16,185,129,.25){% else %}rgba(239,68,68,.18){% endif %}">
+          <h3>{{ module.label }}</h3>
+          <div class="module-meta">
+            <span>{% if module.ready %}Pronto{% else %}Da completare{% endif %}</span>
+            <span>{{ module.render_mode|upper }}</span>
+          </div>
+          {% if module.missing_fields %}
+          <div class="helper-text" style="color:#fca5a5">Campi mancanti: {{ module.missing_fields|join(', ') }}</div>
+          {% else %}
+          <div class="helper-text" style="color:#86efac">Campi obbligatori completi.</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="section-title" style="margin-top:24px">🚫 Mancanze Bloccanti</div>
+      {% if summary.blocking_items %}
+      <div class="warning-list" style="background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.22);color:#fecaca">
+        {% for item in summary.blocking_items %}
+        <div style="margin-bottom:10px">
+          <strong>{{ item.title }}</strong>
+          {% if item.detail %}<div class="helper-text" style="color:#fecaca">{{ item.detail }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="info-banner" style="background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.18)">Nessuna mancanza bloccante rilevata.</div>
+      {% endif %}
+
+      <div class="section-title" style="margin-top:24px">⚠️ Verifiche Consigliate</div>
+      {% if summary.warning_items %}
+      <div class="warning-list" style="background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.22);color:#fde68a">
+        {% for item in summary.warning_items %}
+        <div style="margin-bottom:10px">
+          <strong>{{ item.title }}</strong>
+          {% if item.detail %}<div class="helper-text" style="color:#fde68a">{{ item.detail }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="info-banner">Nessuna verifica aggiuntiva segnalata.</div>
+      {% endif %}
+
+      <div class="section-title" style="margin-top:24px">📦 Azioni Finali</div>
+      <div class="helper-text" style="margin-bottom:10px">Output cartella pratica: <code>{{ practice_folder_hint }}</code></div>
+      <div class="preview-actions" style="flex-wrap:wrap">
+        <form method="post" action="/dossier/final-check/download-all" style="flex:2;min-width:240px">
+          <button type="submit" class="btn-primary" style="margin:0" {% if not summary.can_download %}disabled{% endif %}>Scarica tutti i moduli</button>
+        </form>
+        <form method="post" action="/dossier/final-check/open-folder" style="flex:1;min-width:220px">
+          <button type="submit" class="btn-secondary" style="width:100%;margin:0">Apri cartella pratica</button>
+        </form>
+        <a href="/dossier" class="btn-secondary" style="flex:1;min-width:220px;display:flex;align-items:center;justify-content:center">Torna a correggere</a>
+      </div>
+      {% if not summary.can_download %}
+      <div class="helper-text" style="margin-top:10px">Il download completo si abilita quando la pratica passa a <strong>Pronta</strong> o <strong>Pronta con verifiche</strong>.</div>
+      {% endif %}
     </div>
     """
     def parse_float_web(s: str) -> float:
@@ -5010,6 +5983,25 @@ def run_web(
             spec=spec,
             values=merged_values,
             error=error,
+        )
+
+    def render_final_check_page(
+        results: list[DocumentExtractionResult],
+        manual_values: dict[str, str],
+        error: str = "",
+        notice: str = "",
+    ):
+        summary = build_final_check_summary(results, manual_values)
+        last_practice_dir = sanitize_pdf_text(session.get("final_check_last_dir", ""))
+        folder_hint = Path(last_practice_dir) if last_practice_dir and Path(last_practice_dir).exists() else _get_final_check_output_root(out_dir)
+        return render_page(
+            FINAL_CHECK_CONTENT,
+            page="dossier",
+            title="Check Finale Pratica",
+            summary=summary,
+            practice_folder_hint=str(folder_hint),
+            error=error,
+            notice=notice,
         )
 
     def get_dossier_state_id(create: bool = False) -> str:
@@ -5408,14 +6400,63 @@ def run_web(
         save_current_dossier_state(results, manual_values)
         return render_dossier_page(results=results, manual_values=manual_values, notice="Revisione salvata.")
 
+    @app.get("/dossier/final-check")
+    def dossier_final_check_get():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_dossier_page(error="Carica almeno un documento prima del check finale."), 400
+        return render_final_check_page(results, manual_values)
+
+    @app.post("/dossier/final-check")
+    def dossier_final_check_post():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_dossier_page(error="Carica almeno un documento prima del check finale."), 400
+        manual_values.update(extract_manual_case_values(request.form.to_dict(flat=True)))
+        save_current_dossier_state(results, manual_values)
+        return render_final_check_page(results, manual_values)
+
+    @app.post("/dossier/final-check/download-all")
+    def dossier_final_check_download_all():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_dossier_page(error="Carica almeno un documento prima del download finale."), 400
+        summary = build_final_check_summary(results, manual_values)
+        if not summary["can_download"]:
+            return render_final_check_page(
+                results,
+                manual_values,
+                error="La pratica non è pronta: correggi prima le mancanze bloccanti evidenziate nel check finale.",
+            ), 400
+        try:
+            practice_dir, zip_path = build_final_check_package(summary, out_dir)
+            session["final_check_last_dir"] = str(practice_dir)
+            return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+        except Exception as exc:
+            return render_final_check_page(results, manual_values, error=f"Errore nella generazione del pacchetto pratica: {exc}"), 400
+
+    @app.post("/dossier/final-check/open-folder")
+    def dossier_final_check_open_folder():
+        results, manual_values = load_current_dossier_state()
+        if not results:
+            return render_dossier_page(error="Carica almeno un documento prima di aprire la cartella pratica."), 400
+        stored_dir = sanitize_pdf_text(session.get("final_check_last_dir", ""))
+        target_dir = Path(stored_dir) if stored_dir and Path(stored_dir).exists() else _get_final_check_output_root(out_dir)
+        try:
+            open_local_folder(target_dir)
+            return render_final_check_page(results, manual_values, notice=f"Cartella pratica aperta: {target_dir}")
+        except Exception as exc:
+            return render_final_check_page(results, manual_values, error=f"Impossibile aprire la cartella pratica: {exc}"), 400
+
     @app.post("/dossier/reset")
     def dossier_reset_post():
         clear_current_dossier_state()
+        session.pop("final_check_last_dir", None)
         return render_dossier_page(notice="Nuova analisi avviata: dossier azzerato.")
 
     @app.get("/moduli")
     def moduli_home():
-        specs = (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC)
+        specs = (ALLEGATO_E_SPEC, ALLEGATO_C_SPEC, FRONTESPIZIO_BANCHE_SPEC, FRONTESPIZIO_INTEGRATIVO_SPEC)
         return render_page(MODULI_HOME_CONTENT, page="modules", title="Modulistica MEF", specs=specs)
 
     @app.get("/moduli/<slug>")
