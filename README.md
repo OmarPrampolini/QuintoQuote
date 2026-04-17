@@ -30,6 +30,30 @@
 
 ---
 
+## Prima Di Partire
+
+Per usare la one-liner servono solo queste basi:
+
+- **Windows con PowerShell**
+- **Python 3.10 o superiore** gia installato e disponibile da terminale con `python --version`
+- **Connessione internet** per scaricare il repository e preparare l'ambiente
+
+Cosa non devi preparare a mano:
+
+- **Tesseract OCR**: l'installer prova a configurarlo automaticamente
+- **Virtualenv e dipendenze Python**: vengono create e installate dallo script
+- **Comandi globali del progetto**: al termine avrai `quintoquote` e `quintoquote-update`
+
+Se non hai Python:
+
+1. installa Python 3.10+ da [python.org](https://www.python.org/downloads/windows/)
+2. durante l'installazione abilita l'opzione per aggiungerlo al `PATH`
+3. riapri PowerShell e verifica con:
+
+```powershell
+python --version
+```
+
 ## Provalo in 30 secondi
 
 ```powershell
@@ -262,7 +286,20 @@ Tutti i PDF generati restano disponibili per il download.
 irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps1 | iex
 ```
 
-Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package e avvia QuintoQuote.
+Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package, prepara l'OCR locale e avvia QuintoQuote.
+Se invece lanci `.\install.ps1` da una checkout locale del repository, aggiorna e usa quella cartella direttamente.
+
+Dopo la prima installazione hai due comandi stabili:
+
+```powershell
+quintoquote
+quintoquote-update
+```
+
+- `quintoquote` avvia la web UI
+- `quintoquote-update` riallinea il codice locale allo stato della repo, ricontrolla OCR, launcher, virtualenv e dipendenze, e se e gia tutto sano te lo dice senza richiedere altri comandi
+
+Se il terminale era gia aperto durante l'installazione, chiudilo e riaprilo una volta per rendere disponibili i nuovi comandi nel `PATH`.
 
 ### Quando usare installazione Python e quando usare EXE
 
@@ -284,7 +321,7 @@ Usa la versione `.exe` se:
 - `werkzeug`
 - `pymupdf`
 - `pillow`
-- `tesseract` opzionale ma consigliato per scansioni e screenshot
+- `tesseract` viene gestito automaticamente dall'installer quando possibile
 
 ### Setup
 
