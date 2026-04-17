@@ -228,7 +228,9 @@ function Invoke-GitCapture([string]$GitExe, [string[]]$Arguments) {
         if (Test-Path $stderrFile) {
             $stderr = [System.IO.File]::ReadAllText($stderrFile)
         }
-        $combinedParts = @($stdout.Trim(), $stderr.Trim()) | Where-Object { $_ }
+        $stdoutText = if ($null -ne $stdout) { $stdout.Trim() } else { "" }
+        $stderrText = if ($null -ne $stderr) { $stderr.Trim() } else { "" }
+        $combinedParts = @(@($stdoutText, $stderrText) | Where-Object { $_ })
         $combined = [string]::Join("`n", $combinedParts)
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
