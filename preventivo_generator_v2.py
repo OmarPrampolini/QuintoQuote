@@ -225,13 +225,28 @@ def _default_assets_dir() -> Path:
 def _default_output_dir() -> Path:
     if _is_frozen_runtime():
         return _get_user_data_root() / "output_preventivi"
-    return Path("output_preventivi")
+    configured_root = sanitize_pdf_text(os.getenv("QUINTOQUOTE_ROOT"))
+    if configured_root:
+        return Path(configured_root).expanduser() / "output_preventivi"
+    return Path(__file__).resolve().parent / "output_preventivi"
 
 
 def _default_runtime_temp_dir() -> Path:
     if _is_frozen_runtime():
         return _get_user_data_root() / ".quintoquote_tmp"
     return Path(__file__).resolve().parent / ".quintoquote_tmp"
+
+
+def _resolve_output_dir(path: Path) -> Path:
+    candidate = path.expanduser()
+    if candidate.is_absolute():
+        return candidate
+    configured_root = sanitize_pdf_text(os.getenv("QUINTOQUOTE_ROOT"))
+    if configured_root:
+        return (Path(configured_root).expanduser() / candidate).resolve()
+    if _is_frozen_runtime():
+        return (_get_user_data_root() / candidate).resolve()
+    return (Path(__file__).resolve().parent / candidate).resolve()
 
 
 def _runtime_state_path() -> Path:
@@ -7168,7 +7183,7 @@ def run_web(
         try:
             practice_dir, zip_path = build_final_check_package(summary, out_dir)
             session["final_check_last_dir"] = str(practice_dir)
-            return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+            return send_file(str(zip_path.resolve()), as_attachment=True, download_name=zip_path.name)
         except Exception as exc:
             return render_final_check_page(results, manual_values, error=f"Errore nella generazione del pacchetto pratica: {exc}"), 400
 
@@ -7323,7 +7338,7 @@ def run_web(
         try:
             spec = get_pdf_template_spec(slug)
             output_path, values, _ = generate_pdf_template(spec.key, request.form.to_dict(flat=True), out_dir)
-            return send_file(output_path, as_attachment=True, download_name=output_path.name)
+            return send_file(str(output_path.resolve()), as_attachment=True, download_name=output_path.name)
         except KeyError:
             return "Modulo non trovato", 404
         except Exception as exc:
@@ -7363,7 +7378,7 @@ def run_web(
         try:
             practice_dir, zip_path = build_final_check_package(summary, out_dir)
             session["final_check_last_dir"] = str(practice_dir)
-            return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+            return send_file(str(zip_path.resolve()), as_attachment=True, download_name=zip_path.name)
         except Exception as exc:
             return render_final_check_page(results, manual_values, error=f"Errore nella generazione del pacchetto pratica: {exc}"), 400
 
@@ -7493,7 +7508,7 @@ def run_web(
         else:
             out = build_output_path_multi(base.cliente, out_dir, base.data_preventivo, len(preventivi))
             crea_preventivi_pdf(preventivi, out, profile=prof, text_overrides=text_overrides)
-        return send_file(out, as_attachment=True, download_name=out.name)
+        return send_file(str(out.resolve()), as_attachment=True, download_name=out.name)
 
     @app.get("/storico")
     def storico():
@@ -7514,7 +7529,7 @@ def run_web(
         fpath = resolve_child_file(out_dir, filename, _ALLOWED_DOWNLOAD_EXTS)
         if fpath is None or not fpath.exists():
             return "File non trovato", 404
-        return send_file(fpath, as_attachment=True, download_name=fpath.name)
+        return send_file(str(fpath.resolve()), as_attachment=True, download_name=fpath.name)
 
     # ─── Settings Page ───
     SETTINGS_CONTENT = """
@@ -7682,7 +7697,7 @@ def run_web(
         fpath = resolve_child_file(_ASSETS_DIR, filename, _ALLOWED_IMAGE_EXTS)
         if fpath is None or not fpath.exists():
             return "File non trovato", 404
-        return send_file(fpath)
+        return send_file(str(fpath.resolve()))
 
     @app.get("/esci")
     def app_exit():
@@ -7766,7 +7781,7 @@ def main():
 
     argv, used_start_alias = normalize_cli_argv(sys.argv)
     args = ap.parse_args(argv[1:])
-    out_dir = Path(args.out_dir)
+    out_dir = _resolve_output_dir(Path(args.out_dir))
     if not (1 <= args.port <= 65535):
         ap.exit(2, "Errore: --port deve essere compresa tra 1 e 65535.\n")
 
