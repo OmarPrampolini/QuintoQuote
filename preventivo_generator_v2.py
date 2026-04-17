@@ -2305,6 +2305,35 @@ def _update_pdf_widgets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> t
     return seen_widgets, seen_overlays
 
 
+def _sync_xfa_visible_widgets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> set[str]:
+    seen_widgets: set[str] = set()
+    field_by_widget = {field.widget: field for field in iter_pdf_fields(spec)}
+    for page in doc:
+        for widget in page.widgets() or []:
+            field = field_by_widget.get(widget.field_name)
+            if field is None:
+                continue
+            field_value = _pdf_choice_value(field, values.get(field.name, ""))
+            if field.choices:
+                doc.xref_set_key(widget.xref, "V", f"({field_value})" if field_value else "()")
+                doc.xref_set_key(widget.xref, "DV", f"({field_value})" if field_value else "()")
+                if field_value:
+                    options = [option_value for option_value, _ in field.choices]
+                    if field_value in options:
+                        doc.xref_set_key(widget.xref, "I", f"[{options.index(field_value)}]")
+                seen_widgets.add(widget.field_name)
+                continue
+
+            widget.field_value = field_value
+            if hasattr(widget, "text_font"):
+                widget.text_font = "Helv"
+            if hasattr(widget, "text_fontsize"):
+                widget.text_fontsize = field.font_size
+            widget.update()
+            seen_widgets.add(widget.field_name)
+    return seen_widgets
+
+
 def _get_xfa_packet_xrefs(doc) -> dict[str, int]:
     acro_xref = _get_acro_form_xref(doc)
     if acro_xref is None:
@@ -2357,6 +2386,11 @@ def _capture_pdf_incremental_guard_state(doc) -> PdfIncrementalGuardState:
         perms_sig_object=perms_sig_object,
         acro_form_object=acro_form_object,
     )
+
+
+def _set_xfa_needs_rendering(doc) -> None:
+    root_xref = doc.pdf_catalog()
+    doc.xref_set_key(root_xref, "NeedsRendering", "true")
 
 
 def _prepare_incremental_output(template_path: Path, output_path: Path) -> None:
@@ -2419,6 +2453,15 @@ def _verify_incremental_guard_state(before: PdfIncrementalGuardState, after: Pdf
         )
 
 
+def _verify_xfa_needs_rendering(doc) -> None:
+    root_xref = doc.pdf_catalog()
+    needs_rendering = doc.xref_get_key(root_xref, "NeedsRendering")
+    if needs_rendering != ("bool", "true"):
+        raise RuntimeError(
+            "Il frontespizio XFA non e stato marcato con NeedsRendering=true dopo l'aggiornamento del datasets."
+        )
+
+
 def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> set[str]:
     packet_xrefs = _get_xfa_packet_xrefs(doc)
     datasets_xref = packet_xrefs.get("datasets")
@@ -2447,7 +2490,7 @@ def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> 
 
     doc.update_stream(
         datasets_xref,
-        ET.tostring(xml_root, encoding="utf-8", xml_declaration=True),
+        ET.tostring(xml_root, encoding="utf-8"),
     )
     return updated_fields
 
@@ -2474,7 +2517,9 @@ def _render_xfa_template_incremental(
             )
 
         seen_xfa = _update_xfa_datasets(doc, spec, values)
-        missing_fields = sorted({field.widget for field in iter_pdf_fields(spec)} - seen_xfa)
+        seen_widgets = _sync_xfa_visible_widgets(doc, spec, values)
+        _set_xfa_needs_rendering(doc)
+        missing_fields = sorted({field.widget for field in iter_pdf_fields(spec)} - seen_xfa - seen_widgets)
         if missing_fields:
             raise RuntimeError(
                 "Nel datasets XFA mancano alcuni campi attesi: "
@@ -2500,6 +2545,7 @@ def _render_xfa_template_incremental(
     try:
         guard_after = _capture_pdf_incremental_guard_state(verify_doc)
         _verify_incremental_guard_state(guard_before, guard_after)
+        _verify_xfa_needs_rendering(verify_doc)
     finally:
         verify_doc.close()
 
