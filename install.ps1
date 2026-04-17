@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PYTHON_WINGET_PACKAGE_ID = "Python.Python.3.14"
 
 function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
@@ -46,6 +47,31 @@ function Resolve-PythonCommand {
         } catch {
         }
     }
+    return $null
+}
+
+function Ensure-PythonCommand {
+    $python = Resolve-PythonCommand
+    if ($python) {
+        return $python
+    }
+
+    Write-Step "Python 3.10+ non trovato. Tento l'installazione automatica..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw "Python 3.10+ non trovato e winget non e disponibile. Installa Python manualmente oppure esegui: winget install $PYTHON_WINGET_PACKAGE_ID --exact --silent --accept-package-agreements --accept-source-agreements"
+    }
+
+    & $winget.Source install --id $PYTHON_WINGET_PACKAGE_ID --exact --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installazione automatica di Python fallita. Prova manualmente con: winget install $PYTHON_WINGET_PACKAGE_ID --exact --silent --accept-package-agreements --accept-source-agreements"
+    }
+
+    $python = Resolve-PythonCommand
+    if ($python) {
+        return $python
+    }
+
     throw "Python 3.10+ non trovato. Installa Python e riprova."
 }
 
@@ -658,7 +684,7 @@ function Write-DoctorSummary(
     }
 }
 
-$python = Resolve-PythonCommand
+$python = Ensure-PythonCommand
 $resolvedArchiveUrl = Resolve-ArchiveUrl -GitUrl $RepoUrl -BranchName $Branch -ExplicitUrl $ArchiveUrl
 $tesseractInfo = Ensure-TesseractRobust
 $repoInfo = Ensure-Repo -Destination $TargetDir -BranchName $Branch -GitUrl $RepoUrl -ZipUrl $resolvedArchiveUrl -LocalSource $SourcePath

@@ -35,24 +35,28 @@
 Per usare la one-liner servono solo queste basi:
 
 - **Windows con PowerShell**
-- **Python 3.10 o superiore** gia installato e disponibile da terminale con `python --version`
 - **Connessione internet** per scaricare il repository e preparare l'ambiente
 
 Cosa non devi preparare a mano:
 
+- **Python**: se manca, l'installer prova a installarlo automaticamente via `winget`
 - **Tesseract OCR**: l'installer prova a configurarlo automaticamente
 - **Virtualenv e dipendenze Python**: vengono create e installate dallo script
 - **Comandi globali del progetto**: al termine avrai `quintoquote` e `quintoquote-update`
 
 Se non hai Python:
 
-1. installa Python 3.10+ da [python.org](https://www.python.org/downloads/windows/)
-2. durante l'installazione abilita l'opzione per aggiungerlo al `PATH`
-3. riapri PowerShell e verifica con:
+```powershell
+winget install Python.Python.3.14 --exact --silent --accept-package-agreements --accept-source-agreements
+```
+
+Poi verifica con:
 
 ```powershell
 python --version
 ```
+
+Se `winget` non e disponibile, installa Python da [python.org](https://www.python.org/downloads/windows/) e riapri PowerShell.
 
 ## Provalo in 30 secondi
 
@@ -60,7 +64,7 @@ python --version
 irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps1 | iex
 ```
 
-Lo script crea `.venv`, installa QuintoQuote, abilita il launcher locale e avvia la web UI.
+Lo script prepara Python se manca, crea `.venv`, installa QuintoQuote, abilita il launcher locale e avvia la web UI.
 Compili il form. Scarichi il PDF. Fine.
 
 ---
