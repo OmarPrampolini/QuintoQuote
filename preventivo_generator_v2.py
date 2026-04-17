@@ -318,22 +318,53 @@ def _existing_runtime_url() -> str:
     return f"http://{display_host}:{port}"
 
 
-def _resolve_pdf_template_dir() -> Path:
+def _iter_pdf_template_dirs() -> list[Path]:
     candidates: list[Path] = []
+
+    configured_template_dir = sanitize_pdf_text(os.getenv("QUINTOQUOTE_TEMPLATE_DIR"))
+    if configured_template_dir:
+        candidates.append(Path(configured_template_dir).expanduser())
+
+    configured_root = sanitize_pdf_text(os.getenv("QUINTOQUOTE_ROOT"))
+    if configured_root:
+        candidates.append(Path(configured_root).expanduser() / "docs")
+
     for root_candidate in (
         getattr(sys, "_MEIPASS", ""),
         Path(sys.executable).resolve().parent if _is_frozen_runtime() else None,
-        Path(__file__).parent,
+        Path(__file__).resolve().parent,
+        Path.cwd(),
     ):
         if not root_candidate:
             continue
         root = Path(root_candidate)
         candidates.append(root / "docs")
-    candidates.append(Path(__file__).parent / "docs")
+
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
     for candidate in candidates:
+        try:
+            normalized = str(candidate.resolve(strict=False))
+        except Exception:
+            normalized = str(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _resolve_pdf_template_path(template_name: str) -> Path:
+    attempted_paths: list[Path] = []
+    for template_dir in _iter_pdf_template_dirs():
+        candidate = template_dir / template_name
+        attempted_paths.append(candidate)
         if candidate.exists():
             return candidate
-    return Path(__file__).parent / "docs"
+    attempted = " | ".join(str(path) for path in attempted_paths) if attempted_paths else "(nessun percorso candidato)"
+    raise FileNotFoundError(
+        f"Template non trovato: {template_name}. Percorsi controllati: {attempted}"
+    )
 
 
 _CONFIG_PATH = _default_config_path()
@@ -1653,7 +1684,6 @@ class PdfTemplateSpec:
     render_mode: str = "acroform"
 
 
-_PDF_TEMPLATE_DIR = _resolve_pdf_template_dir()
 _DYNAMIC_DEFAULT_TODAY = "__TODAY__"
 _XFA_DATASET_NS = "http://www.xfa.org/schema/xfa-data/1.0/"
 ET.register_namespace("xfa", _XFA_DATASET_NS)
@@ -2294,11 +2324,7 @@ def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> 
 
 def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_path: Path) -> Path:
     fitz_mod = require_pymupdf()
-    template_path = _PDF_TEMPLATE_DIR / spec.template_name
-    if not template_path.exists():
-        raise FileNotFoundError(
-            f"Template non trovato: {template_path.name}. Percorso cercato: {template_path}"
-        )
+    template_path = _resolve_pdf_template_path(spec.template_name)
 
     doc = fitz_mod.open(template_path)
     doc.need_appearances(True)
