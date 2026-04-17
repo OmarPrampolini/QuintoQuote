@@ -1699,9 +1699,22 @@ class PdfTemplateSpec:
     render_mode: str = "acroform"
 
 
+@dataclass(frozen=True)
+class PdfIncrementalGuardState:
+    version_count: int
+    byte_range: Optional[tuple[int, int, int, int]]
+    sigflags: str
+    need_appearances: tuple[str, str]
+    perms_sig_xref: Optional[int]
+    perms_sig_object: str
+    acro_form_object: str
+
+
 _DYNAMIC_DEFAULT_TODAY = "__TODAY__"
 _XFA_DATASET_NS = "http://www.xfa.org/schema/xfa-data/1.0/"
 ET.register_namespace("xfa", _XFA_DATASET_NS)
+_XFA_INCREMENTAL_ONLY_SPECS = {"frontespizio_banche", "frontespizio_integrativo"}
+_INCREMENTAL_COMPARE_CHUNK_SIZE = 64 * 1024
 
 
 def _xfa_widget(name: str) -> str:
@@ -1990,7 +2003,7 @@ FRONTESPIZIO_BANCHE_SPEC = PdfTemplateSpec(
     key="frontespizio_banche",
     slug="frontespizio-banche",
     label="Frontespizio Banche / Finanziarie MEF",
-    description="Frontespizio ufficiale MEF per banche e finanziarie. Modulo Adobe LiveCycle/XFA: QuintoQuote aggiorna sia i widget visibili sia il dataset interno del PDF.",
+    description="Frontespizio ufficiale MEF per banche e finanziarie. Modulo Adobe LiveCycle/XFA: QuintoQuote aggiorna il pacchetto datasets XFA e salva il PDF in modalita append-only per preservare i diritti Adobe Reader del template originale.",
     summary="49 campi compilabili ufficiali, inclusi documenti allegati, estinzioni e riferimenti del contratto.",
     template_name="frontespizio_banche_finanziarie.pdf",
     output_prefix="FrontespizioMEF",
@@ -2095,7 +2108,7 @@ FRONTESPIZIO_INTEGRATIVO_SPEC = PdfTemplateSpec(
     key="frontespizio_integrativo",
     slug="frontespizio-integrativo",
     label="Frontespizio Integrativo Banche / Finanziarie MEF",
-    description="Frontespizio integrativo ufficiale MEF per integrazioni documentali. Anche qui QuintoQuote aggiorna widget e dataset XFA del PDF LiveCycle.",
+    description="Frontespizio integrativo ufficiale MEF per integrazioni documentali. Anche qui QuintoQuote aggiorna il pacchetto datasets XFA e salva il PDF in modalita append-only per preservare i diritti Adobe Reader del template originale.",
     summary="26 campi compilabili ufficiali, dedicati a protocollo RTS, riferimenti contratto e documenti integrativi.",
     template_name="frontespizio_integrativo_banche_finanziarie.pdf",
     output_prefix="FrontespizioIntegrativoMEF",
@@ -2293,11 +2306,9 @@ def _update_pdf_widgets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> t
 
 
 def _get_xfa_packet_xrefs(doc) -> dict[str, int]:
-    root_xref = doc.pdf_catalog()
-    acro_form = doc.xref_get_key(root_xref, "AcroForm")
-    if acro_form[0] != "xref":
+    acro_xref = _get_acro_form_xref(doc)
+    if acro_xref is None:
         return {}
-    acro_xref = int(acro_form[1].split()[0])
     xfa = doc.xref_get_key(acro_xref, "XFA")
     if xfa[0] != "array":
         return {}
@@ -2305,6 +2316,107 @@ def _get_xfa_packet_xrefs(doc) -> dict[str, int]:
         label: int(xref)
         for label, xref in re.findall(r"\((.*?)\)(\d+)\s+0\s+R", xfa[1])
     }
+
+
+def _get_acro_form_xref(doc) -> Optional[int]:
+    root_xref = doc.pdf_catalog()
+    acro_form = doc.xref_get_key(root_xref, "AcroForm")
+    if acro_form[0] != "xref":
+        return None
+    return int(acro_form[1].split()[0])
+
+
+def _extract_perms_signature_xref(catalog_object: str) -> Optional[int]:
+    match = re.search(r"/Perms\s*<<.*?/UR3\s+(\d+)\s+0\s+R", catalog_object, re.S)
+    return int(match.group(1)) if match else None
+
+
+def _extract_pdf_byte_range(sig_object: str) -> Optional[tuple[int, int, int, int]]:
+    match = re.search(r"/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]", sig_object)
+    if not match:
+        return None
+    return tuple(int(value) for value in match.groups())
+
+
+def _capture_pdf_incremental_guard_state(doc) -> PdfIncrementalGuardState:
+    root_xref = doc.pdf_catalog()
+    catalog_object = doc.xref_object(root_xref)
+    acro_xref = _get_acro_form_xref(doc)
+    acro_form_object = doc.xref_object(acro_xref) if acro_xref is not None else ""
+    sigflags = doc.xref_get_key(acro_xref, "SigFlags")[1] if acro_xref is not None else ""
+    need_appearances = doc.xref_get_key(acro_xref, "NeedAppearances") if acro_xref is not None else ("null", "null")
+    perms_value = doc.xref_get_key(root_xref, "Perms")
+    perms_sig_xref = _extract_perms_signature_xref(catalog_object)
+    perms_sig_object = perms_value[1] if perms_value[0] == "dict" else ""
+    return PdfIncrementalGuardState(
+        version_count=int(getattr(doc, "version_count", 0) or 0),
+        byte_range=_extract_pdf_byte_range(perms_sig_object or catalog_object),
+        sigflags=sigflags,
+        need_appearances=need_appearances,
+        perms_sig_xref=perms_sig_xref,
+        perms_sig_object=perms_sig_object,
+        acro_form_object=acro_form_object,
+    )
+
+
+def _prepare_incremental_output(template_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(template_path, output_path)
+
+
+def _verify_incremental_prefix_unchanged(template_path: Path, output_path: Path) -> None:
+    original_size = template_path.stat().st_size
+    output_size = output_path.stat().st_size
+    if output_size <= original_size:
+        raise RuntimeError(
+            "Il salvataggio incrementale non ha creato una nuova revisione append-only sul PDF XFA."
+        )
+
+    with template_path.open("rb") as src, output_path.open("rb") as dst:
+        remaining = original_size
+        while remaining > 0:
+            chunk_size = min(_INCREMENTAL_COMPARE_CHUNK_SIZE, remaining)
+            if src.read(chunk_size) != dst.read(chunk_size):
+                raise RuntimeError(
+                    "Il salvataggio incrementale ha alterato il prefisso originale del PDF XFA: "
+                    "PyMuPDF non ha preservato i byte firmati del template."
+                )
+            remaining -= chunk_size
+
+
+def _verify_incremental_guard_state(before: PdfIncrementalGuardState, after: PdfIncrementalGuardState) -> None:
+    if after.version_count <= before.version_count:
+        raise RuntimeError(
+            "Il salvataggio del frontespizio XFA non ha aggiunto una nuova revisione incrementale leggibile."
+        )
+    if before.byte_range != after.byte_range:
+        raise RuntimeError(
+            "Il salvataggio incrementale ha alterato il ByteRange della firma UR3 del template."
+        )
+    if (
+        before.perms_sig_xref is not None
+        and after.perms_sig_xref is not None
+        and before.perms_sig_xref != after.perms_sig_xref
+    ):
+        raise RuntimeError(
+            "Il salvataggio incrementale ha alterato il riferimento interno della firma /UR3 del template."
+        )
+    if before.perms_sig_object != after.perms_sig_object:
+        raise RuntimeError(
+            "Il salvataggio incrementale ha alterato l'oggetto /Perms /UR3 del template."
+        )
+    if before.sigflags != after.sigflags:
+        raise RuntimeError(
+            "Il salvataggio incrementale ha alterato i SigFlags dell'AcroForm del template."
+        )
+    if before.need_appearances != after.need_appearances:
+        raise RuntimeError(
+            "Il salvataggio incrementale ha introdotto o modificato NeedAppearances sul frontespizio XFA."
+        )
+    if before.acro_form_object != after.acro_form_object:
+        raise RuntimeError(
+            "Il salvataggio incrementale ha alterato l'oggetto AcroForm del template XFA."
+        )
 
 
 def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> set[str]:
@@ -2333,13 +2445,73 @@ def _update_xfa_datasets(doc, spec: PdfTemplateSpec, values: dict[str, str]) -> 
         target.text = _pdf_choice_value(field, values.get(field.name, "")) or None
         updated_fields.add(field.widget)
 
-    doc.update_stream(datasets_xref, ET.tostring(xml_root, encoding="utf-8"))
+    doc.update_stream(
+        datasets_xref,
+        ET.tostring(xml_root, encoding="utf-8", xml_declaration=True),
+    )
     return updated_fields
+
+
+def _render_xfa_template_incremental(
+    spec: PdfTemplateSpec,
+    values: dict[str, str],
+    template_path: Path,
+    output_path: Path,
+) -> Path:
+    fitz_mod = require_pymupdf()
+    _prepare_incremental_output(template_path, output_path)
+
+    doc = fitz_mod.open(output_path)
+    try:
+        guard_before = _capture_pdf_incremental_guard_state(doc)
+        if guard_before.byte_range is None:
+            raise RuntimeError(
+                "Il template XFA non espone una firma UR3 / ByteRange leggibile: preservazione Adobe Reader non garantibile."
+            )
+        if not doc.can_save_incrementally():
+            raise RuntimeError(
+                "Il template XFA non consente un salvataggio incrementale reale; QuintoQuote rifiuta il full-save sui frontespizi."
+            )
+
+        seen_xfa = _update_xfa_datasets(doc, spec, values)
+        missing_fields = sorted({field.widget for field in iter_pdf_fields(spec)} - seen_xfa)
+        if missing_fields:
+            raise RuntimeError(
+                "Nel datasets XFA mancano alcuni campi attesi: "
+                + ", ".join(missing_fields)
+                + ". Il template XFA potrebbe non esporli in topmostSubform."
+            )
+
+        doc.save(
+            doc.name,
+            incremental=True,
+            encryption=fitz_mod.PDF_ENCRYPT_KEEP,
+            garbage=0,
+            clean=False,
+            deflate=False,
+            no_new_id=True,
+        )
+    finally:
+        doc.close()
+
+    _verify_incremental_prefix_unchanged(template_path, output_path)
+
+    verify_doc = fitz_mod.open(output_path)
+    try:
+        guard_after = _capture_pdf_incremental_guard_state(verify_doc)
+        _verify_incremental_guard_state(guard_before, guard_after)
+    finally:
+        verify_doc.close()
+
+    return output_path
 
 
 def render_pdf_template(spec: PdfTemplateSpec, values: dict[str, str], output_path: Path) -> Path:
     fitz_mod = require_pymupdf()
     template_path = _resolve_pdf_template_path(spec.template_name)
+
+    if spec.key in _XFA_INCREMENTAL_ONLY_SPECS:
+        return _render_xfa_template_incremental(spec, values, template_path, output_path)
 
     doc = fitz_mod.open(template_path)
     doc.need_appearances(True)
@@ -6248,7 +6420,7 @@ def run_web(
       <div class="info-banner">
         In QuintoQuote l'assistente documenti è integrato direttamente dentro ogni modulo: apri il modulo che ti serve,
         usa i documenti guidati per precompilare i campi utili e completa il PDF nello stesso spazio.
-        Per i frontespizi ufficiali LiveCycle/XFA QuintoQuote aggiorna anche il dataset interno del PDF, non solo il valore visibile nel campo.
+        Per i frontespizi ufficiali LiveCycle/XFA QuintoQuote aggiorna solo il pacchetto datasets XFA e salva il PDF in modalita append-only, per preservare i diritti Adobe Reader del template originale.
       </div>
 
       {% if notice %}
@@ -6321,7 +6493,7 @@ def run_web(
       <div class="info-banner">
         {{ spec.description }}<br/>
         Template di origine: <code>{{ spec.template_name }}</code>. {{ spec.summary }}
-        {% if spec.render_mode == 'xfa' %}<br/>Compatibilità: modulo Adobe LiveCycle/XFA, compilato con aggiornamento widget + dataset interno. Verifica finale consigliata in Adobe Reader prima dell'invio.{% endif %}
+        {% if spec.render_mode == 'xfa' %}<br/>Compatibilita: modulo Adobe LiveCycle/XFA, compilato aggiornando solo il pacchetto datasets XFA con salvataggio append-only. Verifica finale consigliata in Adobe Reader prima dell'invio.{% endif %}
       </div>
 
       {% if notice %}

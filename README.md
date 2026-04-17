@@ -230,7 +230,7 @@ Nella web UI trovi anche la sezione **Moduli**.
 - **Frontespizio Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 49 campi compilabili.
 - **Frontespizio Integrativo Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 26 campi compilabili.
 - **Output diretto in PDF**: compili i campi nella UI e scarichi il modulo gia popolato, mantenendo impaginazione e caselle originali.
-- **Compatibilità XFA**: per i due frontespizi QuintoQuote aggiorna sia il campo visibile sia il `datasets` interno del PDF, per maggiore compatibilità con Adobe Reader e con i flussi MEF/PEC.
+- **Compatibilità XFA**: per i due frontespizi QuintoQuote aggiorna solo il pacchetto `datasets` XFA e salva il PDF in modalità append-only, per preservare i diritti Adobe Reader del template originale e migliorare la compatibilità con i flussi MEF/PEC.
 - **Assistente documenti integrato**: ogni modulo contiene il proprio spazio per caricare contratto, cedolino e documenti anagrafici, rivedere i dati estratti e riversarli subito nel modulo aperto.
 
 I template PDF di partenza vengono letti dalla cartella `docs/`.
