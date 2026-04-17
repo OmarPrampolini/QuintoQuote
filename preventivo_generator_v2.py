@@ -2946,6 +2946,21 @@ def find_tesseract_executable() -> str:
 
 
 def find_tesseract_data_dir(tesseract_cmd: Optional[str] = None) -> str:
+    configured_candidates = [
+        sanitize_pdf_text(os.getenv("QUINTOQUOTE_TESSDATA_DIR")),
+        sanitize_pdf_text(os.getenv("TESSDATA_PREFIX")),
+    ]
+    for configured in configured_candidates:
+        if not configured:
+            continue
+        configured_path = Path(configured).expanduser()
+        direct_model = configured_path / "ita.traineddata"
+        nested_dir = configured_path / "tessdata"
+        if direct_model.exists():
+            return str(configured_path)
+        if nested_dir.exists():
+            return str(nested_dir)
+
     executable = Path(tesseract_cmd or find_tesseract_executable())
     if not executable.exists():
         return ""

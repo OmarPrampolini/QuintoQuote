@@ -118,6 +118,10 @@ function Get-LocalTesseractExecutable {
     return (Join-Path (Get-LocalTesseractRoot) "tesseract.exe")
 }
 
+function Get-LocalTessdataDir {
+    return (Join-Path $env:LOCALAPPDATA "QuintoQuote\ocr\tessdata")
+}
+
 function Set-UserEnvironmentVariable([string]$Name, [string]$Value) {
     [Environment]::SetEnvironmentVariable($Name, $Value, "User")
     Set-Item -Path ("Env:" + $Name) -Value $Value
@@ -152,7 +156,10 @@ function Install-UserCommands([string]$RepoRoot, [string]$TesseractExecutablePat
     $repoRootWindows = $RepoRoot
     $installScript = Join-Path $RepoRoot "install.ps1"
     $tessdataDir = ""
-    if ($TesseractExecutablePath) {
+    $configuredTessdataDir = [Environment]::GetEnvironmentVariable("QUINTOQUOTE_TESSDATA_DIR", "User")
+    if ($configuredTessdataDir) {
+        $tessdataDir = $configuredTessdataDir
+    } elseif ($TesseractExecutablePath) {
         $tessdataDir = Get-TesseractTessdataDir -ExecutablePath $TesseractExecutablePath
     }
 
@@ -162,6 +169,7 @@ function Install-UserCommands([string]$RepoRoot, [string]$TesseractExecutablePat
         "set ""QUINTOQUOTE_ROOT=$repoRootWindows""",
         "set ""QUINTOQUOTE_LAUNCHER=%QUINTOQUOTE_ROOT%\.venv\Scripts\quintoquote.exe""",
         $(if ($TesseractExecutablePath) { "set ""QUINTOQUOTE_TESSERACT_PATH=$TesseractExecutablePath""" }),
+        $(if ($tessdataDir) { "set ""QUINTOQUOTE_TESSDATA_DIR=$tessdataDir""" }),
         $(if ($tessdataDir) { "set ""TESSDATA_PREFIX=$tessdataDir""" }),
         "if not exist ""%QUINTOQUOTE_LAUNCHER%"" (",
         "  echo QuintoQuote non trovato in %QUINTOQUOTE_ROOT%. Esegui di nuovo l'installer.",
@@ -180,6 +188,7 @@ function Install-UserCommands([string]$RepoRoot, [string]$TesseractExecutablePat
         "@echo off",
         "setlocal",
         $(if ($TesseractExecutablePath) { "set ""QUINTOQUOTE_TESSERACT_PATH=$TesseractExecutablePath""" }),
+        $(if ($tessdataDir) { "set ""QUINTOQUOTE_TESSDATA_DIR=$tessdataDir""" }),
         $(if ($tessdataDir) { "set ""TESSDATA_PREFIX=$tessdataDir""" }),
         "powershell -ExecutionPolicy Bypass -File ""$installScript"" -TargetDir ""$repoRootWindows"" -NoLaunch %*"
     )
@@ -207,11 +216,28 @@ function Sync-LocalSource([string]$FromPath, [string]$ToPath) {
 }
 
 function Invoke-GitCapture([string]$GitExe, [string[]]$Arguments) {
-    $output = & $GitExe @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = [string]::Join("`n", @($output))
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $GitExe -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+        $stdout = ""
+        $stderr = ""
+        if (Test-Path $stdoutFile) {
+            $stdout = [System.IO.File]::ReadAllText($stdoutFile)
+        }
+        if (Test-Path $stderrFile) {
+            $stderr = [System.IO.File]::ReadAllText($stderrFile)
+        }
+        $combined = [string]::Join("`n", @($stdout.Trim(), $stderr.Trim()) | Where-Object { $_ })
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = $combined
+            Stdout = $stdout
+            Stderr = $stderr
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -329,8 +355,8 @@ function Ensure-Repo([string]$Destination, [string]$BranchName, [string]$GitUrl,
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git) {
         Write-Step "Clono il repository GitHub"
-        & $git.Source clone --depth 1 --branch $BranchName $GitUrl $Destination
-        if ($LASTEXITCODE -eq 0) {
+        $clone = Invoke-GitCapture $git.Source @("clone", "--depth", "1", "--branch", $BranchName, $GitUrl, $Destination)
+        if ($clone.ExitCode -eq 0) {
             return [pscustomobject]@{
                 Path = (Resolve-Path $Destination).Path
                 Changed = $true
@@ -381,6 +407,10 @@ function Find-TesseractExecutable {
 }
 
 function Get-TesseractTessdataDir([string]$ExecutablePath) {
+    $configured = [Environment]::GetEnvironmentVariable("QUINTOQUOTE_TESSDATA_DIR", "User")
+    if ($configured -and (Test-Path $configured)) {
+        return $configured
+    }
     $root = Get-TesseractRootFromExecutable -ExecutablePath $ExecutablePath
     if (-not $root) {
         return ""
@@ -395,6 +425,17 @@ function Get-TesseractTessdataDir([string]$ExecutablePath) {
         }
     }
     return (Join-Path $root "tessdata")
+}
+
+function Resolve-TessdataInstallDir([string]$ExecutablePath) {
+    $root = Get-TesseractRootFromExecutable -ExecutablePath $ExecutablePath
+    if ($root) {
+        $localRoot = Get-LocalTesseractRoot
+        if ($root.StartsWith($localRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return (Join-Path $root "tessdata")
+        }
+    }
+    return (Get-LocalTessdataDir)
 }
 
 function Assert-TrustedModelSource([string]$Url, [string]$Name) {
@@ -433,7 +474,7 @@ function Install-TessdataModel([string]$Url, [string]$TargetFile, [string]$Expec
 function Ensure-TesseractLanguageData([string]$ExecutablePath) {
     $downloaded = 0
     try {
-        $tessdataDir = Get-TesseractTessdataDir -ExecutablePath $ExecutablePath
+        $tessdataDir = Resolve-TessdataInstallDir -ExecutablePath $ExecutablePath
         if (-not $tessdataDir) {
             throw "Cartella tessdata non trovata per Tesseract."
         }
@@ -471,6 +512,7 @@ function Ensure-TesseractLanguageData([string]$ExecutablePath) {
     }
     return [pscustomobject]@{
         ExecutablePath = $ExecutablePath
+        TessdataDir = $tessdataDir
         DownloadedModels = $downloaded
         Changed = ($downloaded -gt 0)
     }
@@ -578,14 +620,16 @@ function Ensure-TesseractRobust {
         Write-Host "Tesseract OCR gia installato." -ForegroundColor Green
         $langInfo = Ensure-TesseractLanguageData -ExecutablePath $existingExecutable
         Set-UserEnvironmentVariable -Name "QUINTOQUOTE_TESSERACT_PATH" -Value $existingExecutable
-        $tessdataDir = Get-TesseractTessdataDir -ExecutablePath $existingExecutable
+        $tessdataDir = $langInfo.TessdataDir
         if ($tessdataDir) {
+            Set-UserEnvironmentVariable -Name "QUINTOQUOTE_TESSDATA_DIR" -Value $tessdataDir
             Set-UserEnvironmentVariable -Name "TESSDATA_PREFIX" -Value $tessdataDir
         }
         return [pscustomobject]@{
             ExecutablePath = $existingExecutable
             Source = "existing"
             Changed = [bool]$langInfo.Changed
+            TessdataDir = $tessdataDir
             DownloadedModels = [int]$langInfo.DownloadedModels
         }
     }
@@ -618,14 +662,16 @@ function Ensure-TesseractRobust {
     if ($installedExecutable) {
         $langInfo = Ensure-TesseractLanguageData -ExecutablePath $installedExecutable
         Set-UserEnvironmentVariable -Name "QUINTOQUOTE_TESSERACT_PATH" -Value $installedExecutable
-        $tessdataDir = Get-TesseractTessdataDir -ExecutablePath $installedExecutable
+        $tessdataDir = $langInfo.TessdataDir
         if ($tessdataDir) {
+            Set-UserEnvironmentVariable -Name "QUINTOQUOTE_TESSDATA_DIR" -Value $tessdataDir
             Set-UserEnvironmentVariable -Name "TESSDATA_PREFIX" -Value $tessdataDir
         }
         return [pscustomobject]@{
             ExecutablePath = $installedExecutable
             Source = $installedBy
             Changed = $true
+            TessdataDir = $tessdataDir
             DownloadedModels = [int]$langInfo.DownloadedModels
         }
     }
