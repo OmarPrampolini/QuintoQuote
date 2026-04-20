@@ -3,12 +3,13 @@
 </p>
 
 <p align="center">
-  Generatore open source di preventivi PDF professionali<br>
+  Framework operativo locale per <strong>preventivi</strong>, <strong>moduli MEF/XFA</strong>,
+  <strong>OCR documentale</strong> e <strong>chiusura pratica</strong><br>
   per <strong>Cessione del Quinto</strong> e <strong>Delega di Pagamento</strong>.
 </p>
 
 <p align="center">
-  <strong>Locale. Veloce. Personalizzabile. Pronto da inviare al cliente.</strong>
+  <strong>Installazione one-liner. Locale. Operativo. Pronto per Acrobat, MEF e PEC.</strong>
 </p>
 
 <p align="center">
@@ -19,7 +20,7 @@
 </p>
 
 <p align="center">
-  Web UI locale &nbsp;&middot;&nbsp; CLI &nbsp;&middot;&nbsp; Branding agente &nbsp;&middot;&nbsp; Bollino OAM cliccabile &nbsp;&middot;&nbsp; Multi-scenario
+  Web UI locale &nbsp;&middot;&nbsp; One-liner Windows &nbsp;&middot;&nbsp; CLI &nbsp;&middot;&nbsp; Moduli MEF/XFA &nbsp;&middot;&nbsp; OCR locale &nbsp;&middot;&nbsp; Check Finale Pratica
 </p>
 
 <p align="center">
@@ -27,6 +28,21 @@
 </p>
 
 > *QuintoQuote e un progetto open source pensato per aiutare agenti, collaboratori e realta non strutturate a preparare preventivi PDF chiari, ordinati e professionali. E uno strumento di supporto operativo e non sostituisce mai la documentazione bancaria ufficiale, precontrattuale o contrattuale, ne le verifiche, le delibere o le condizioni definitive del soggetto finanziatore.*
+
+---
+
+## Non E Solo Un Generatore Di Preventivi
+
+Oggi QuintoQuote copre un flusso operativo molto piu ampio:
+
+- genera preventivi PDF brandizzati e multi-scenario
+- compila modulistica ufficiale MEF, inclusi i due frontespizi LiveCycle/XFA
+- estrae dati da PDF, scansioni e immagini con OCR locale e parser dedicati
+- precompila i moduli a partire dai documenti della pratica
+- esegue un check finale e prepara il pacchetto documentale della pratica
+- si installa in una riga su Windows e lascia due comandi stabili: `quintoquote` e `quintoquote-update`
+
+In pratica non e piu solo un generatore PDF: e un framework locale di lavoro per preventivazione, modulistica e chiusura pratica.
 
 ---
 
@@ -65,7 +81,7 @@ irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps
 ```
 
 Lo script prepara Python se manca, crea `.venv`, installa QuintoQuote, abilita il launcher locale e avvia la web UI.
-Compili il form. Scarichi il PDF. Fine.
+Configura anche OCR/Tesseract, registra `quintoquote` e `quintoquote-update`, e ti lascia pronto non solo per i preventivi ma anche per modulistica MEF, frontespizi XFA e check pratica.
 
 ---
 
@@ -161,7 +177,7 @@ Flusso consigliato:
 
 ---
 
-## Il risultato
+## Il risultato lato preventivi
 
 | Pagina 1 | Pagina 2 |
 | --- | --- |
@@ -182,11 +198,14 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 ## Perche QuintoQuote
 
 - **Gira in locale sul tuo PC.** Nessun server, nessun cloud, nessun dato che esce.
+- **Installazione one-liner reale.** Una riga PowerShell prepara ambiente, OCR, launcher e web UI.
 - **Nessun SaaS, nessun abbonamento.** Installi e usi. Per sempre.
+- **Non solo preventivi.** Preventivi, modulistica MEF, OCR documentale e check finale pratica nello stesso strumento.
 - **PDF professionali gia pronti.** Non servono template, non serve Canva, non serve Word.
 - **Branding agente completo.** Nome, rete, OAM, colori, logo, bollino: tutto tuo.
 - **Bollino OAM cliccabile.** Chi riceve il PDF clicca e verifica la tua iscrizione.
 - **Multi-scenario.** Piu opzioni nello stesso PDF, una pagina per scenario.
+- **Compatibile con flussi reali.** Frontespizi XFA utilizzabili in Acrobat Reader e testati nei flussi MEF/PEC.
 - **Adatto a uso reale.** Non e una demo. E quello che usi ogni giorno.
 
 ---
@@ -198,6 +217,7 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 - Mediatori creditizi
 - Reti vendita e strutture commerciali
 - Professionisti che vogliono generare preventivi in locale, senza SaaS
+- Back office e operatori che devono compilare modulistica MEF e chiudere pratiche operative
 
 ---
 
@@ -214,14 +234,16 @@ Anteprima live a destra, form a sinistra. Ogni campo che modifichi aggiorna l'an
 | Multi-scenario | Piu combinazioni rata/durata nello stesso documento |
 | Storico PDF | Tutti i preventivi generati, scaricabili dalla UI |
 | Modulistica MEF | Compilatore guidato per Allegato E, Allegato C, Frontespizio MEF e Frontespizio Integrativo |
+| Frontespizi XFA | Gestione dei due moduli LiveCycle/XFA ufficiali con resa visibile in Acrobat |
 | Assistente documenti NO AI | Upload PDF, JPG, PNG, OCR locale e prefill integrato dentro i moduli |
 | Check Finale Pratica | Verifica completezza, mismatch documentali, coerenze numeriche e pacchetto finale moduli |
+| Installazione operativa | `irm ... | iex` prepara tutto e lascia due comandi stabili nel PATH |
 | CLI guidata | Prompt interattivo da terminale |
 | CLI batch | `--non-interactive` per script e automazioni |
 
 ---
 
-## Compilatore Moduli MEF
+## Compilatore Moduli MEF E Frontespizi XFA
 
 Nella web UI trovi anche la sezione **Moduli**.
 
@@ -230,7 +252,8 @@ Nella web UI trovi anche la sezione **Moduli**.
 - **Frontespizio Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 49 campi compilabili.
 - **Frontespizio Integrativo Banche / Finanziarie MEF**: modulo ufficiale LiveCycle/XFA con 26 campi compilabili.
 - **Output diretto in PDF**: compili i campi nella UI e scarichi il modulo gia popolato, mantenendo impaginazione e caselle originali.
-- **Compatibilità XFA**: per i due frontespizi QuintoQuote aggiorna solo il pacchetto `datasets` XFA e salva il PDF in modalità append-only, per preservare i diritti Adobe Reader del template originale e migliorare la compatibilità con i flussi MEF/PEC.
+- **Scrittura XFA operativa**: per i due frontespizi QuintoQuote aggiorna i dati XFA, sincronizza i campi visibili e forza il rendering necessario per Acrobat.
+- **Compatibilità Acrobat / MEF / PEC**: i frontespizi risultanti sono pensati per restare usabili in Adobe Reader e nei flussi reali di protocollazione.
 - **Assistente documenti integrato**: ogni modulo contiene il proprio spazio per caricare contratto, cedolino e documenti anagrafici, rivedere i dati estratti e riversarli subito nel modulo aperto.
 
 I template PDF di partenza vengono letti dalla cartella `docs/`.
@@ -290,8 +313,17 @@ Tutti i PDF generati restano disponibili per il download.
 irm https://raw.githubusercontent.com/OmarPrampolini/QuintoQuote/main/install.ps1 | iex
 ```
 
-Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package, prepara l'OCR locale e avvia QuintoQuote.
+Questa e la via consigliata per l'uso operativo quotidiano.
+
+Per default installa il progetto in `~/QuintoQuote`, crea `.venv`, aggiorna `pip`, installa il package, prepara l'OCR locale, registra i launcher e avvia QuintoQuote.
 Se invece lanci `.\install.ps1` da una checkout locale del repository, aggiorna e usa quella cartella direttamente.
+
+In una singola riga ottieni:
+
+- ambiente Python pronto all'uso
+- OCR/Tesseract configurato quando possibile
+- launcher `quintoquote` e `quintoquote-update`
+- web UI locale per preventivi, moduli MEF/XFA e check pratica
 
 Dopo la prima installazione hai due comandi stabili:
 
